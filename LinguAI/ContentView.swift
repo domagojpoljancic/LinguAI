@@ -3,8 +3,8 @@
 //  LinguAI
 //
 //  Created by Domagoj Poljancic on 05.03.26.
-//
 
+ 
 import SwiftUI
 import SwiftData
 
