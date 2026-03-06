@@ -5,6 +5,27 @@
 
 import SwiftUI
 
+// MARK: - Shared modal aesthetic & LinguAI branding
+private enum ModalStyle {
+    static let cornerRadius: CGFloat = 32
+    static let edgePadding: CGFloat = 20
+    /// LinguAI Green – hex #2EC470
+    static var linguAIGreen: Color {
+        Color(red: 46/255, green: 196/255, blue: 112/255)
+    }
+    static let disabledButtonOpacity: Double = 0.3
+    static let emptyCardShadowOpacity: Double = 0.1
+    static let emptyCardShadowRadius: CGFloat = 20
+    static let fabShadowRadius: CGFloat = 12
+    static let fabShadowY: CGFloat = 8
+    /// Compact sheet height for New/Edit box – keeps input in thumb reach (one-handed use).
+    static let newBoxSheetHeight: CGFloat = 320
+}
+
+private extension Font {
+    static let linguAIRounded = Font.system(.body, design: .rounded)
+}
+
 struct VocabularyBox: Identifiable, Hashable {
     let id = UUID()
     var name: String
@@ -37,29 +58,17 @@ struct VocabularyBoxesView: View {
         "Slang", "Tech", "Opinion", "Questions", "Connectors"
     ]
     @State private var currentSuggestion = "Greetings"
+    @FocusState private var isNewBoxNameFocused: Bool
+    @State private var isShowingStudy = false
+    @State private var newBoxSheetDetent: PresentationDetent = .height(ModalStyle.newBoxSheetHeight)
 
     var body: some View {
-        List {
+        ZStack {
+            Color(.systemGroupedBackground).ignoresSafeArea()
             if boxes.isEmpty {
-                Section {
-                    VStack(spacing: 8) {
-                        Image(systemName: "shippingbox")
-                            .font(.largeTitle)
-                            .foregroundColor(.secondary)
-
-                        Text("No boxes yet")
-                            .font(.headline)
-
-                        Text("Tap the plus button to create your first vocabulary box.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 32)
-                }
+                emptyStateCard
             } else {
-                Section {
+                List {
                     ForEach(boxes) { box in
                         NavigationLink {
                             VocabularyBoxDetailView(box: box)
@@ -74,62 +83,39 @@ struct VocabularyBoxesView: View {
                     }
                     .onDelete(perform: deleteBoxes)
                 }
+                .listStyle(.insetGrouped)
+                .scrollContentBackground(.hidden)
             }
+
+            floatingActionBar
         }
-        .navigationTitle("Vocabulary boxes")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                Text("Vocabulary boxes")
+                    .font(.system(.headline, design: .rounded).weight(.bold))
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     startAddingBox()
                 } label: {
                     Image(systemName: "plus")
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(ModalStyle.linguAIGreen)
                 }
             }
         }
+        .navigationDestination(isPresented: $isShowingStudy) {
+            StudyView()
+        }
         .sheet(isPresented: $isPresentingBoxEditor) {
-            NavigationStack {
-                Form {
-                    Section(header: Text("Box name")) {
-                        TextField("e.g. \(currentSuggestion)", text: $newBoxName)
-                            .onChange(of: newBoxName) { newValue in
-                                if newValue.count > nameCharacterLimit {
-                                    newBoxName = String(newValue.prefix(nameCharacterLimit))
-                                }
-                            }
-
-                        if let nameError {
-                            Text(nameError)
-                                .font(.caption)
-                                .foregroundColor(.red)
-                        }
-
-                        HStack {
-                            Spacer()
-                            Text("\(newBoxName.count)/\(nameCharacterLimit) characters")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Spacer()
-                        }
-                    }
-                }
-                .navigationTitle("New box")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Close") {
-                            dismissAddBox()
-                        }
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Save") {
-                            saveBox()
-                        }
-                        .disabled(newBoxName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                }
-            }
-            .presentationDetents([.medium])
+            newBoxSheet
+                .presentationCornerRadius(ModalStyle.cornerRadius)
+                .presentationDetents([.height(ModalStyle.newBoxSheetHeight), .large], selection: $newBoxSheetDetent)
+                .presentationDragIndicator(.visible)
+        }
+        .onChange(of: isPresentingBoxEditor) { _, isPresented in
+            if !isPresented { newBoxSheetDetent = .height(ModalStyle.newBoxSheetHeight) }
         }
         .alert("Delete box?", isPresented: $isShowingDeleteConfirmation) {
             Button("Delete", role: .destructive) {
@@ -143,6 +129,141 @@ struct VocabularyBoxesView: View {
             }
         } message: {
             Text("Are you sure you want to delete this box?")
+        }
+    }
+
+    private var floatingActionBar: some View {
+        VStack {
+            Spacer(minLength: 0)
+            Button {
+                isShowingStudy = true
+            } label: {
+                Label("Study", systemImage: "play.fill")
+                    .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                    .foregroundStyle(ModalStyle.linguAIGreen)
+            }
+            .frame(minHeight: 44)
+            .padding(.horizontal, 28)
+            .padding(.vertical, 14)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay(
+                Capsule()
+                    .strokeBorder(.white.opacity(0.5), lineWidth: 0.5)
+            )
+            .shadow(color: .black.opacity(0.15), radius: ModalStyle.fabShadowRadius, x: 0, y: ModalStyle.fabShadowY)
+            .padding(.bottom, 20)
+        }
+    }
+
+    private var emptyStateCard: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "shippingbox")
+                .font(.system(size: 56))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(ModalStyle.linguAIGreen)
+
+            Text("No boxes yet")
+                .font(.system(.headline, design: .rounded))
+
+            Text("Tap the plus button to create your first vocabulary box.")
+                .font(.system(.caption, design: .rounded))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 40)
+        .padding(.horizontal, 24)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color(.systemBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(ModalStyle.emptyCardShadowOpacity), radius: ModalStyle.emptyCardShadowRadius, x: 0, y: 4)
+        .padding(.horizontal, 20)
+    }
+
+    private var newBoxSheet: some View {
+        let isEditing = editingBoxID != nil
+        let isSaveDisabled = newBoxName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Box name")
+                            .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        TextField("e.g. \(currentSuggestion)", text: $newBoxName)
+                            .onChange(of: newBoxName) { newValue in
+                                if newValue.count > nameCharacterLimit {
+                                    newBoxName = String(newValue.prefix(nameCharacterLimit))
+                                }
+                            }
+                            .textFieldStyle(.plain)
+                            .font(.system(.body, design: .rounded))
+                            .padding(12)
+                            .background(Color(.systemBackground))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .strokeBorder(
+                                        isNewBoxNameFocused ? ModalStyle.linguAIGreen : Color.primary.opacity(0.15),
+                                        lineWidth: 1
+                                    )
+                            )
+                            .focused($isNewBoxNameFocused)
+                    }
+
+                    if let nameError {
+                        Text(nameError)
+                            .font(.system(.caption, design: .rounded))
+                            .foregroundColor(.red)
+                            .padding(.top, 8)
+                    }
+
+                    Text("\(newBoxName.count)/\(nameCharacterLimit) characters")
+                        .font(.system(.caption, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 8)
+
+                    Spacer(minLength: 24)
+
+                    Button {
+                        saveBox()
+                    } label: {
+                        Text("Save")
+                            .font(.system(.body, design: .rounded).weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(ModalStyle.linguAIGreen)
+                            .foregroundColor(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .frame(minHeight: 50)
+                    .disabled(isSaveDisabled)
+                    .opacity(isSaveDisabled ? ModalStyle.disabledButtonOpacity : 1)
+                }
+                .padding(ModalStyle.edgePadding)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemBackground))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text(isEditing ? "Edit box" : "New box")
+                        .font(.system(.headline, design: .rounded).weight(.bold))
+                }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismissAddBox()
+                    }
+                    .font(.system(.body, design: .rounded))
+                    .foregroundStyle(ModalStyle.linguAIGreen)
+                }
+            }
         }
     }
 
@@ -165,7 +286,9 @@ struct VocabularyBoxesView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 10)
+        .frame(minHeight: 52)
+        .contentShape(Rectangle())
     }
 
     private func progressCircle(for progress: Double) -> some View {
@@ -239,6 +362,7 @@ struct VocabularyBoxesView: View {
     }
 
     private func dismissAddBox() {
+        isNewBoxNameFocused = false
         newBoxName = ""
         nameError = nil
         editingBoxID = nil
@@ -249,35 +373,322 @@ struct VocabularyBoxesView: View {
 struct VocabularyBoxDetailView: View {
     let box: VocabularyBox
 
+    @State private var tableRows: [ModernDataTableRow] = ModernDataTableRow.sampleTwentyRows
+    @State private var isShowingAddWord = false
+    @State private var germanInput = ""
+    @State private var englishInput = ""
+    @State private var addWordError: String?
+
+    @State private var isShowingEditWord = false
+    @State private var editingRow: ModernDataTableRow?
+    @State private var editGermanInput = ""
+    @State private var editEnglishInput = ""
+    @State private var editWordError: String?
+
+    @State private var rowToDelete: ModernDataTableRow?
+    @State private var isShowingDeleteWordConfirmation = false
+    @FocusState private var addWordFocusedField: Int?
+    @FocusState private var editWordFocusedField: Int?
+    @State private var isShowingSettings = false
+    @State private var isShowingStudy = false
+    @State private var wordSheetDetent: PresentationDetent = .medium
+
     var body: some View {
-        VStack(spacing: 0) {
-            headerRow
-            tableBody
+        ZStack {
+            ModernDataTableView(
+                header1: "German",
+                header2: "English",
+                rows: tableRows,
+                onEdit: { row in
+                    editingRow = row
+                    editGermanInput = row.column1
+                    editEnglishInput = row.column2
+                    editWordError = nil
+                    isShowingEditWord = true
+                },
+                onDelete: { row in
+                    rowToDelete = row
+                    isShowingDeleteWordConfirmation = true
+                }
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemBackground))
+
+            detailFloatingActionBar
         }
         .navigationTitle(box.name)
         .navigationBarTitleDisplayMode(.inline)
-    }
-
-    private var headerRow: some View {
-        HStack(spacing: 0) {
-            tableHeaderCell("German")
-            Divider().frame(height: 20)
-            tableHeaderCell("English")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    isShowingSettings = true
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(ModalStyle.linguAIGreen)
+                }
+            }
         }
-        .background(Color(.secondarySystemBackground))
+        .sheet(isPresented: $isShowingSettings) {
+            NavigationStack {
+                SettingsView()
+            }
+        }
+        .navigationDestination(isPresented: $isShowingStudy) {
+            StudyView()
+        }
+        .sheet(isPresented: $isShowingAddWord) {
+            addWordSheet
+                .presentationCornerRadius(ModalStyle.cornerRadius)
+        }
+        .sheet(isPresented: $isShowingEditWord) {
+            editWordSheet
+                .presentationCornerRadius(ModalStyle.cornerRadius)
+        }
+        .onChange(of: isShowingAddWord) { _, show in if show { wordSheetDetent = .medium } }
+        .onChange(of: isShowingEditWord) { _, show in if show { wordSheetDetent = .medium } }
+        .alert("Delete word?", isPresented: $isShowingDeleteWordConfirmation) {
+            Button("Delete", role: .destructive) {
+                if let row = rowToDelete {
+                    tableRows.removeAll { $0.id == row.id }
+                }
+                rowToDelete = nil
+            }
+            Button("Cancel", role: .cancel) {
+                rowToDelete = nil
+            }
+        } message: {
+            Text("This word will be removed from the table. This cannot be undone.")
+        }
     }
 
-    private func tableHeaderCell(_ title: String) -> some View {
-        Text(title)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .font(.subheadline.weight(.semibold))
+    private var detailFloatingActionBar: some View {
+        VStack {
+            Spacer(minLength: 0)
+            HStack(spacing: 24) {
+                Button {
+                    isShowingStudy = true
+                } label: {
+                    Label("Study", systemImage: "play.fill")
+                        .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                        .foregroundStyle(ModalStyle.linguAIGreen)
+                }
+                .frame(minHeight: 44)
+                Button {
+                    addWordError = nil
+                    germanInput = ""
+                    englishInput = ""
+                    isShowingAddWord = true
+                } label: {
+                    Label("Add word", systemImage: "plus")
+                        .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                        .foregroundStyle(ModalStyle.linguAIGreen)
+                }
+                .frame(minHeight: 44)
+            }
+            .padding(.horizontal, 28)
+            .padding(.vertical, 14)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay(
+                Capsule()
+                    .strokeBorder(.white.opacity(0.5), lineWidth: 0.5)
+            )
+            .shadow(color: .black.opacity(0.15), radius: ModalStyle.fabShadowRadius, x: 0, y: ModalStyle.fabShadowY)
+            .padding(.bottom, 20)
+        }
     }
 
-    private var tableBody: some View {
-        Color(.systemBackground)
-            .frame(maxWidth: .infinity, minHeight: 100)
+    private var addWordSheet: some View {
+        NavigationStack {
+            floatingModalContent(
+                title: "Add word",
+                primaryButtonTitle: "Add",
+                primaryAction: addWord,
+                closeAction: { isShowingAddWord = false },
+                isPrimaryDisabled: germanInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || englishInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                errorMessage: addWordError,
+                focusedFieldIndex: $addWordFocusedField,
+                sheetDetent: $wordSheetDetent,
+                fields: [
+                    ("German word", "e.g. Hallo", $germanInput),
+                    ("English word", "e.g. Hello", $englishInput)
+                ]
+            )
+        }
+    }
+
+    private func addWord() {
+        let german = germanInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let english = englishInput.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if german.isEmpty || english.isEmpty {
+            addWordError = "Both fields are mandatory."
+            return
+        }
+
+        tableRows.insert(
+            ModernDataTableRow(column1: german, column2: english),
+            at: 0
+        )
+        addWordError = nil
+        germanInput = ""
+        englishInput = ""
+        isShowingAddWord = false
+    }
+
+    private var editWordSheet: some View {
+        NavigationStack {
+            floatingModalContent(
+                title: "Edit word",
+                primaryButtonTitle: "Save",
+                primaryAction: saveEditedWord,
+                closeAction: { isShowingEditWord = false },
+                isPrimaryDisabled: editGermanInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || editEnglishInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                errorMessage: editWordError,
+                focusedFieldIndex: $editWordFocusedField,
+                sheetDetent: $wordSheetDetent,
+                fields: [
+                    ("German word", "e.g. Hallo", $editGermanInput),
+                    ("English word", "e.g. Hello", $editEnglishInput)
+                ]
+            )
+        }
+    }
+
+    private func floatingModalContent(
+        title: String,
+        primaryButtonTitle: String,
+        primaryAction: @escaping () -> Void,
+        closeAction: @escaping () -> Void,
+        isPrimaryDisabled: Bool,
+        errorMessage: String?,
+        focusedFieldIndex: FocusState<Int?>.Binding,
+        sheetDetent: Binding<PresentationDetent>,
+        fields: [(label: String, placeholder: String, text: Binding<String>)]
+    ) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 24) {
+                    ForEach(Array(fields.enumerated()), id: \.offset) { index, field in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(field.label)
+                                .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            TextField(field.placeholder, text: field.text)
+                                .textInputAutocapitalization(.never)
+                                .textFieldStyle(.plain)
+                                .font(.system(.body, design: .rounded))
+                                .padding(12)
+                                .background(Color(.systemBackground))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .strokeBorder(
+                                            focusedFieldIndex.wrappedValue == index
+                                                ? ModalStyle.linguAIGreen
+                                                : Color.primary.opacity(0.15),
+                                            lineWidth: 1
+                                        )
+                                )
+                                .focused(focusedFieldIndex, equals: index)
+                        }
+                    }
+
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.system(.caption, design: .rounded))
+                            .foregroundColor(.red)
+                    }
+                }
+
+                Spacer(minLength: 24)
+
+                Button(action: primaryAction) {
+                    Text(primaryButtonTitle)
+                        .font(.system(.body, design: .rounded).weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(ModalStyle.linguAIGreen)
+                        .foregroundColor(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .frame(minHeight: 50)
+                .disabled(isPrimaryDisabled)
+                .opacity(isPrimaryDisabled ? ModalStyle.disabledButtonOpacity : 1)
+            }
+            .padding(ModalStyle.edgePadding)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Text(title)
+                    .font(.system(.headline, design: .rounded).weight(.bold))
+            }
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel", action: closeAction)
+                    .font(.system(.body, design: .rounded))
+                    .foregroundStyle(ModalStyle.linguAIGreen)
+            }
+        }
+        .presentationDetents([.medium, .large], selection: sheetDetent)
+        .presentationDragIndicator(.visible)
+    }
+
+    private func saveEditedWord() {
+        guard let editingRow else { return }
+        let german = editGermanInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let english = editEnglishInput.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if german.isEmpty || english.isEmpty {
+            editWordError = "Both fields are mandatory."
+            return
+        }
+
+        if let index = tableRows.firstIndex(where: { $0.id == editingRow.id }) {
+            tableRows[index] = ModernDataTableRow(
+                id: editingRow.id,
+                column1: german,
+                column2: english
+            )
+        }
+        editWordError = nil
+        self.editingRow = nil
+        editGermanInput = ""
+        editEnglishInput = ""
+        isShowingEditWord = false
+    }
+}
+
+// MARK: - Placeholder views (empty state for now)
+private struct StudyView: View {
+    var body: some View {
+        VStack {
+            Spacer()
+            Text("Study")
+                .font(.system(.title2, design: .rounded).weight(.bold))
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+    }
+}
+
+private struct SettingsView: View {
+    var body: some View {
+        VStack {
+            Text("Settings")
+                .font(.system(.title2, design: .rounded).weight(.bold))
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
     }
 }
 
