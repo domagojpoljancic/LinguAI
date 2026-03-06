@@ -1,0 +1,19 @@
+# Xcode and macOS Essentials
+.DS_Store
+build/
+DerivedData/
+
+# User-specific settings (Crucial to ignore!)
+*.xcuserdatad
+xcuserdata/
+
+# Xcode workspace shared data
+**/project.xcworkspace/xcshareddata/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Signing & Certificates (Keep these private!)
+*.cert
+*.mobileprovision

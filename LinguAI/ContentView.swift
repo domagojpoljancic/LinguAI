@@ -3,10 +3,14 @@
 //  LinguAI
 //
 //  Created by Domagoj Poljancic on 05.03.26.
-//
 
+ 
 import SwiftUI
 import SwiftData
+
+private enum AppRoute: Hashable {
+    case vocabularyBoxes
+}
 
 struct ContentView: View {
     private let gridColumns = [
@@ -14,16 +18,24 @@ struct ContentView: View {
         GridItem(.flexible(), spacing: 16)
     ]
 
+    @State private var navigationPath = NavigationPath()
+
     private var primaryGreen: Color {
-        // Use the system green that feels familiar across iOS
         Color(.systemGreen)
     }
 
+    private static let categories: [(title: String, subtitle: String, systemImage: String, isActive: Bool)] = [
+        ("Grammar", "Rules & exercises", "text.cursor", false),
+        ("Vocabulary box", "Words & phrases", "shippingbox", true),
+        ("Reading", "Comprehension practice", "book.closed", false),
+        ("Chat", "Talk with AI tutor", "bubble.left.and.bubble.right", false)
+    ]
+
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             ZStack {
                 Color(.systemBackground)
-                .ignoresSafeArea()
+                    .ignoresSafeArea()
 
                 VStack(spacing: 24) {
                     headerBar
@@ -34,6 +46,12 @@ struct ContentView: View {
                 .padding(.horizontal, 20)
                 .padding(.top, 24)
                 .padding(.bottom, 16)
+            }
+            .navigationDestination(for: AppRoute.self) { route in
+                switch route {
+                case .vocabularyBoxes:
+                    VocabularyBoxesView()
+                }
             }
         }
     }
@@ -85,32 +103,16 @@ struct ContentView: View {
 
     private var categoriesGrid: some View {
         LazyVGrid(columns: gridColumns, spacing: 16) {
-            categoryCard(
-                title: "Grammar",
-                subtitle: "Rules & exercises",
-                systemImage: "text.cursor",
-                badgeText: "Coming soon"
-            )
-
-            categoryCard(
-                title: "Vocabulary box",
-                subtitle: "Words & phrases",
-                systemImage: "shippingbox"
-            )
-
-            categoryCard(
-                title: "Reading",
-                subtitle: "Comprehension practice",
-                systemImage: "book.closed",
-                badgeText: "Coming soon"
-            )
-
-            categoryCard(
-                title: "Chat",
-                subtitle: "Talk with AI tutor",
-                systemImage: "bubble.left.and.bubble.right",
-                badgeText: "Coming soon"
-            )
+            ForEach(Array(Self.categories.enumerated()), id: \.offset) { _, category in
+                categoryCard(
+                    title: category.title,
+                    subtitle: category.subtitle,
+                    systemImage: category.systemImage,
+                    isActive: category.isActive,
+                    badgeText: category.isActive ? nil : "Coming soon",
+                    action: category.isActive ? { navigationPath.append(AppRoute.vocabularyBoxes) } : nil
+                )
+            }
         }
     }
 
@@ -118,10 +120,26 @@ struct ContentView: View {
         title: String,
         subtitle: String,
         systemImage: String,
-        badgeText: String? = nil
+        isActive: Bool = true,
+        badgeText: String? = nil,
+        action: (() -> Void)?
     ) -> some View {
-        Button {
-            // TODO: navigate to \(title) section
+        let background = isActive
+            ? primaryGreen.opacity(0.11)
+            : Color(.systemGray6)
+
+        let border = isActive
+            ? primaryGreen.opacity(0.35)
+            : Color(.systemGray4).opacity(0.8)
+
+        let shadowColor = isActive
+            ? primaryGreen.opacity(0.18)
+            : Color.black.opacity(0.04)
+
+        return Button {
+            if isActive {
+                action?()
+            }
         } label: {
             VStack(spacing: 10) {
                 Image(systemName: systemImage)
@@ -130,13 +148,13 @@ struct ContentView: View {
                     .padding(10)
                     .background(
                         Circle()
-                            .fill(primaryGreen.opacity(0.9))
+                            .fill(isActive ? primaryGreen.opacity(0.9) : Color(.systemGray3))
                     )
 
                 VStack(spacing: 4) {
                     Text(title)
                         .font(.headline)
-                        .foregroundColor(.primary)
+                        .foregroundColor(isActive ? .primary : .secondary)
 
                     Text(subtitle)
                         .font(.caption)
@@ -144,33 +162,36 @@ struct ContentView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .multilineTextAlignment(.center)
-
-                if let badgeText {
-                    Text(badgeText)
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(Color(.systemOrange).opacity(0.12))
-                        )
-                        .foregroundColor(Color(.systemOrange))
-                        .padding(.top, 4)
-                }
             }
             .padding(16)
             .frame(maxWidth: .infinity, minHeight: 160, maxHeight: 160)
             .background(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(primaryGreen.opacity(0.11))
+                    .fill(background)
                     .overlay(
                         RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(primaryGreen.opacity(0.35), lineWidth: 1)
+                            .stroke(border, lineWidth: 1)
                     )
-                    .shadow(color: primaryGreen.opacity(0.18), radius: 8, x: 0, y: 4)
+                    .shadow(color: shadowColor, radius: 8, x: 0, y: 4)
             )
+            .overlay(alignment: .topTrailing) {
+                if let badgeText, !isActive {
+                    Text(badgeText)
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(Color(.systemOrange))
+                        )
+                        .foregroundColor(.white)
+                        .padding(.top, 6)
+                        .padding(.trailing, 6)
+                }
+            }
         }
         .buttonStyle(.plain)
+        .allowsHitTesting(isActive)
     }
 }
 
