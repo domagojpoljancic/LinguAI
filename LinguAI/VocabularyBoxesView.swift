@@ -13,7 +13,8 @@ private enum ModalStyle {
     static var linguAIGreen: Color {
         Color(red: 46/255, green: 196/255, blue: 112/255)
     }
-    static let disabledButtonOpacity: Double = 0.3
+    /// Disabled primary button opacity – keeps label readable on green background (Add / Save)
+    static let disabledButtonOpacity: Double = 0.65
     static let emptyCardShadowOpacity: Double = 0.1
     static let emptyCardShadowRadius: CGFloat = 20
     static let fabShadowRadius: CGFloat = 12
@@ -489,7 +490,7 @@ struct VocabularyBoxDetailView: View {
         }
         .sheet(isPresented: $isShowingSettings) {
             NavigationStack {
-                SettingsView()
+                SettingsView(maxWordsAvailable: box.wordCount)
             }
         }
         .navigationDestination(isPresented: $isShowingStudy) {
@@ -722,31 +723,582 @@ struct VocabularyBoxDetailView: View {
     }
 }
 
-// MARK: - Placeholder views (empty state for now)
+// MARK: - Box Progression (Study) screen
+private struct BoxProgressionLevel: Identifiable {
+    let id: Int
+    let levelNumber: Int
+    let wordCount: Int
+    let progress: Double // 0...1
+}
+
 private struct StudyView: View {
+    private static let cardCornerRadius: CGFloat = 30
+    private static let cardShadowRadius: CGFloat = 12
+    private static let cardShadowY: CGFloat = 6
+    private static let cardShadowOpacity: Double = 0.1
+    private static let gridSpacing: CGFloat = 16
+    private static let edgePadding: CGFloat = 16
+    private static let cardHeight: CGFloat = 160
+    private static let progressBarHeight: CGFloat = 4
+    private static let progressTrackOpacity: Double = 0.25
+    private static let selectedBorderWidth: CGFloat = 2
+    private static let unselectedContentOpacity: Double = 0.4
+    private static let levelBadgeSize: CGFloat = 52
+    private static let levelBadgeGreenOpacity: Double = 0.1
+
+    @State private var selectedLevelIDs: Set<Int> = [1, 2, 3, 4, 5, 6]
+    @State private var isShowingSettings = false
+    @State private var isShowingSession = false
+
+    private static var levels: [BoxProgressionLevel] {
+        [
+            BoxProgressionLevel(id: 1, levelNumber: 1, wordCount: 48, progress: 0.85),
+            BoxProgressionLevel(id: 2, levelNumber: 2, wordCount: 124, progress: 0.6),
+            BoxProgressionLevel(id: 3, levelNumber: 3, wordCount: 89, progress: 0.3),
+            BoxProgressionLevel(id: 4, levelNumber: 4, wordCount: 52, progress: 0.1),
+            BoxProgressionLevel(id: 5, levelNumber: 5, wordCount: 180, progress: 0.55),
+            BoxProgressionLevel(id: 6, levelNumber: 6, wordCount: 352, progress: 0.42)
+        ]
+    }
+
     var body: some View {
-        VStack {
-            Spacer()
-            Text("Study")
-                .font(.system(.title2, design: .rounded).weight(.bold))
-                .foregroundStyle(.secondary)
-            Spacer()
+        ZStack(alignment: .bottom) {
+            ScrollView {
+                VStack(spacing: Self.gridSpacing) {
+                    // Row 1: Levels 1 and 2
+                    HStack(spacing: Self.gridSpacing) {
+                        progressionCard(Self.levels[0])
+                        progressionCard(Self.levels[1])
+                    }
+
+                    // Row 2: Levels 3 and 4
+                    HStack(spacing: Self.gridSpacing) {
+                        progressionCard(Self.levels[2])
+                        progressionCard(Self.levels[3])
+                    }
+
+                    // Row 3: Levels 5 and 6
+                    HStack(spacing: Self.gridSpacing) {
+                        progressionCard(Self.levels[4])
+                        progressionCard(Self.levels[5])
+                    }
+                }
+                .padding(Self.edgePadding)
+                .padding(.bottom, 72)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(uiColor: .systemGroupedBackground))
+            .navigationTitle("Box Progression")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isShowingSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                            .font(.body.weight(.medium))
+                            .foregroundStyle(ModalStyle.linguAIGreen)
+                    }
+                }
+            }
+            .sheet(isPresented: $isShowingSettings) {
+                NavigationStack {
+                    SettingsView(maxWordsAvailable: totalWordsInSelectedLevels)
+                }
+            }
+            .navigationDestination(isPresented: $isShowingSession) {
+                StudySessionView(
+                    wordPairs: StudySessionView.sampleWordPairs,
+                    sourceLanguageLabel: "German",
+                    translationLanguageLabel: "English",
+                    onFinish: { isShowingSession = false }
+                )
+            }
+
+            startFloatingButton
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemBackground))
+    }
+
+    private var totalWordsInSelectedLevels: Int {
+        Self.levels.filter { selectedLevelIDs.contains($0.id) }.map(\.wordCount).reduce(0, +)
+    }
+
+    private var startFloatingButton: some View {
+        let count = selectedLevelIDs.count
+        let isDisabled = count == 0
+        return Button {
+            isShowingSession = true
+        } label: {
+            Text("Start (\(count))")
+                .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                .foregroundStyle(isDisabled ? .secondary : ModalStyle.linguAIGreen)
+        }
+        .disabled(isDisabled)
+        .frame(minHeight: 44)
+        .padding(.horizontal, 28)
+        .padding(.vertical, 14)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(.white.opacity(0.5), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.15), radius: ModalStyle.fabShadowRadius, x: 0, y: ModalStyle.fabShadowY)
+        .padding(.bottom, 20)
+    }
+
+    private func progressionCard(_ level: BoxProgressionLevel) -> some View {
+        let isSelected = selectedLevelIDs.contains(level.id)
+        return Button {
+            toggleSelection(level.id)
+        } label: {
+            VStack(spacing: 12) {
+                // Top: Level number in badge (faint green background)
+                ZStack {
+                    Circle()
+                        .fill(ModalStyle.linguAIGreen.opacity(Self.levelBadgeGreenOpacity))
+                    Text("\(level.levelNumber)")
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                        .foregroundStyle(.primary)
+                }
+                .frame(width: Self.levelBadgeSize, height: Self.levelBadgeSize)
+
+                // Middle: count
+                Text("\(level.wordCount)")
+                    .font(.system(.title3, design: .rounded).weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer(minLength: 0)
+
+                // Bottom: thin progress bar (line)
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: Self.progressBarHeight / 2, style: .continuous)
+                            .fill(ModalStyle.linguAIGreen.opacity(Self.progressTrackOpacity))
+                        RoundedRectangle(cornerRadius: Self.progressBarHeight / 2, style: .continuous)
+                            .fill(ModalStyle.linguAIGreen)
+                            .frame(width: max(0, geo.size.width * level.progress))
+                    }
+                }
+                .frame(height: Self.progressBarHeight)
+            }
+            .opacity(isSelected ? 1 : Self.unselectedContentOpacity)
+            .padding(.vertical, 20)
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity)
+            .frame(height: Self.cardHeight)
+            .background(
+                RoundedRectangle(cornerRadius: Self.cardCornerRadius, style: .continuous)
+                    .fill(Color(uiColor: .secondarySystemGroupedBackground))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Self.cardCornerRadius, style: .continuous)
+                    .strokeBorder(
+                        isSelected ? ModalStyle.linguAIGreen : Color.primary.opacity(0.06),
+                        lineWidth: isSelected ? Self.selectedBorderWidth : 1
+                    )
+            )
+            .shadow(
+                color: .black.opacity(Self.cardShadowOpacity),
+                radius: Self.cardShadowRadius,
+                x: 0,
+                y: Self.cardShadowY
+            )
+        }
+        .buttonStyle(ProgressionCardButtonStyle())
+        .frame(maxWidth: .infinity)
+        .frame(height: Self.cardHeight)
+    }
+
+    private func toggleSelection(_ levelID: Int) {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        if selectedLevelIDs.contains(levelID) {
+            selectedLevelIDs.remove(levelID)
+        } else {
+            selectedLevelIDs.insert(levelID)
+        }
     }
 }
 
-private struct SettingsView: View {
+private struct ProgressionCardButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.easeInOut(duration: 0.2), value: configuration.isPressed)
+    }
+}
+
+// MARK: - Study Session
+private struct StudySessionView: View {
+    typealias WordPair = (native: String, translation: String)
+
+    var wordPairs: [WordPair]
+    /// Source language (primary word), shown in header badge and above the main word when revealed.
+    var sourceLanguageLabel: String = "German"
+    /// Translation language, shown above the translation when revealed.
+    var translationLanguageLabel: String = "English"
+    var onFinish: () -> Void
+
+    @AppStorage("wordsPerSession") private var wordsPerSession: Int = 10
+    @AppStorage("hapticFeedbackEnabled") private var hapticFeedbackEnabled: Bool = true
+
+    @State private var sessionWords: [WordPair] = []
+    @State private var currentIndex: Int = 0
+    @State private var isRevealed: Bool = false
+    @State private var correctCount: Int = 0
+    @State private var incorrectCount: Int = 0
+    @State private var sessionStartTime: Date = .now
+    @State private var showCompletion: Bool = false
+    @State private var showExitAlert: Bool = false
+
+    private static let progressBarHeight: CGFloat = 7
+    private static let cardCornerRadius: CGFloat = 32
+    private static let cardShadowRadius: CGFloat = 16
+    private static let cardShadowOpacity: Double = 0.08
+    private static let wrongButtonColor = Color(.systemRed).opacity(0.18)
+    private static let wrongIconColor = Color(.systemRed)
+
+    private var totalWords: Int { sessionWords.count }
+    private var completedCount: Int { correctCount + incorrectCount }
+    private var progress: Double {
+        guard totalWords > 0 else { return 0 }
+        return Double(completedCount) / Double(totalWords)
+    }
+    private var totalTime: TimeInterval { Date().timeIntervalSince(sessionStartTime) }
+    private var accuracyPercent: Int {
+        let total = correctCount + incorrectCount
+        guard total > 0 else { return 100 }
+        return Int(round(Double(correctCount) / Double(total) * 100))
+    }
+
     var body: some View {
-        VStack {
-            Text("Settings")
-                .font(.system(.title2, design: .rounded).weight(.bold))
-                .foregroundStyle(.secondary)
-            Spacer()
+        ZStack {
+            Color(uiColor: .systemGroupedBackground)
+                .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                // Progress bar (6–8pt, rounded track)
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: Self.progressBarHeight / 2, style: .continuous)
+                            .fill(Color.primary.opacity(0.1))
+                        RoundedRectangle(cornerRadius: Self.progressBarHeight / 2, style: .continuous)
+                            .fill(ModalStyle.linguAIGreen)
+                            .frame(width: max(0, geo.size.width * progress))
+                            .animation(.easeInOut(duration: 0.35), value: progress)
+                    }
+                }
+                .frame(height: Self.progressBarHeight)
+
+                // Header: back (left), source language pill (center)
+                HStack {
+                    Button {
+                        showExitAlert = true
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(.body, design: .rounded).weight(.semibold))
+                            .foregroundStyle(ModalStyle.linguAIGreen)
+                            .frame(width: 44, height: 44)
+                    }
+
+                    Spacer()
+
+                    Text(sourceLanguageLabel)
+                        .font(.system(.caption2, design: .rounded).weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(Color(.systemGray5)))
+
+                    Spacer()
+
+                    Color.clear.frame(width: 44, height: 44)
+                }
+                .padding(.horizontal, 8)
+                .padding(.top, 12)
+                .padding(.bottom, 24)
+
+                // Word card (center): white card, primary word, translation + language labels when revealed
+                if !sessionWords.isEmpty, currentIndex < sessionWords.count {
+                    let pair = sessionWords[currentIndex]
+                    VStack(spacing: 16) {
+                        VStack(spacing: 6) {
+                            if isRevealed {
+                                Text(sourceLanguageLabel)
+                                    .font(.system(.caption2, design: .rounded))
+                                    .foregroundStyle(Color(.systemGray))
+                            }
+                            Text(pair.native)
+                                .font(.system(size: 34, weight: .bold, design: .rounded))
+                                .foregroundStyle(.primary)
+                                .multilineTextAlignment(.center)
+                        }
+
+                        if isRevealed {
+                            VStack(spacing: 6) {
+                                Text(translationLanguageLabel)
+                                    .font(.system(.caption2, design: .rounded))
+                                    .foregroundStyle(Color(.systemGray))
+                                Text(pair.translation)
+                                    .font(.system(size: 22, weight: .medium, design: .rounded))
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.center)
+                            }
+                            .transition(.asymmetric(
+                                insertion: .opacity.combined(with: .move(edge: .top)),
+                                removal: .opacity
+                            ))
+                        }
+                    }
+                    .padding(32)
+                    .frame(maxWidth: .infinity)
+                    .background(
+                        RoundedRectangle(cornerRadius: Self.cardCornerRadius, style: .continuous)
+                            .fill(Color(uiColor: .secondarySystemGroupedBackground))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Self.cardCornerRadius, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+                    )
+                    .shadow(
+                        color: .black.opacity(Self.cardShadowOpacity),
+                        radius: Self.cardShadowRadius,
+                        x: 0,
+                        y: 6
+                    )
+                    .padding(.horizontal, 24)
+                    .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isRevealed)
+                }
+
+                Spacer(minLength: 0)
+
+                // Bottom: Check pill or Wrong / Correct circles
+                if isRevealed {
+                    HStack(spacing: 32) {
+                        Button {
+                            recordAnswer(correct: false)
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(.title2, design: .rounded).weight(.bold))
+                                .foregroundStyle(Self.wrongIconColor)
+                                .frame(width: 64, height: 64)
+                                .background(Circle().fill(Self.wrongButtonColor))
+                                .overlay(Circle().strokeBorder(Self.wrongIconColor.opacity(0.5), lineWidth: 1.5))
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            recordAnswer(correct: true)
+                        } label: {
+                            Image(systemName: "checkmark")
+                                .font(.system(.title2, design: .rounded).weight(.bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 64, height: 64)
+                                .background(Circle().fill(ModalStyle.linguAIGreen))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.bottom, 32)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.9)),
+                        removal: .opacity
+                    ))
+                    .animation(.spring(response: 0.4, dampingFraction: 0.75), value: isRevealed)
+                } else {
+                    Button {
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                            if hapticFeedbackEnabled {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            }
+                            isRevealed = true
+                        }
+                    } label: {
+                        Text("Check")
+                            .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                            .foregroundStyle(ModalStyle.linguAIGreen)
+                    }
+                    .frame(minHeight: 44)
+                    .padding(.horizontal, 28)
+                    .padding(.vertical, 14)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay(Capsule().strokeBorder(.white.opacity(0.5), lineWidth: 0.5))
+                    .shadow(color: .black.opacity(0.15), radius: ModalStyle.fabShadowRadius, x: 0, y: ModalStyle.fabShadowY)
+                    .padding(.bottom, 32)
+                }
+            }
+            .opacity(showCompletion ? 0 : 1)
+
+            // Completion overlay
+            if showCompletion {
+                completionOverlay
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemBackground))
+        .onAppear {
+            let count = min(wordsPerSession, wordPairs.count)
+            sessionWords = Array(wordPairs.shuffled().prefix(max(1, count)))
+            sessionStartTime = Date()
+        }
+        .alert("End Session?", isPresented: $showExitAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Exit", role: .destructive) {
+                onFinish()
+            }
+        } message: {
+            Text("Progress for this session will be lost.")
+        }
+    }
+
+    private var completionOverlay: some View {
+        ZStack {
+            Color(uiColor: .systemGroupedBackground)
+                .ignoresSafeArea()
+
+            VStack(spacing: 28) {
+                Text("Well Done!")
+                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                    .foregroundStyle(.primary)
+
+                Text("Session Complete")
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundStyle(.secondary)
+
+                Text("\(totalWords) words studied")
+                    .font(.system(.title3, design: .rounded).weight(.semibold))
+                    .foregroundStyle(.primary)
+
+                Button {
+                    onFinish()
+                } label: {
+                    Text("Finish")
+                        .font(.system(.body, design: .rounded).weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(ModalStyle.linguAIGreen, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 24)
+                .padding(.top, 16)
+            }
+            .transition(.opacity.combined(with: .scale(scale: 0.92)))
+        }
+        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: showCompletion)
+    }
+
+    private func formatDuration(_ interval: TimeInterval) -> String {
+        let m = Int(interval) / 60
+        let s = Int(interval) % 60
+        if m > 0 {
+            return "\(m)m \(s)s"
+        }
+        return "\(s)s"
+    }
+
+    private func recordAnswer(correct: Bool) {
+        if hapticFeedbackEnabled {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        }
+        if correct { correctCount += 1 } else { incorrectCount += 1 }
+        if currentIndex + 1 >= totalWords {
+            withAnimation(.easeOut(duration: 0.25)) {
+                showCompletion = true
+            }
+        } else {
+            currentIndex += 1
+            isRevealed = false
+        }
+    }
+}
+
+extension StudySessionView {
+    /// Sample word pairs for development; replace with real data from selected boxes.
+    static let sampleWordPairs: [WordPair] = [
+        ("Hallo", "Hello"),
+        ("Danke", "Thank you"),
+        ("Bitte", "Please"),
+        ("Ja", "Yes"),
+        ("Nein", "No"),
+        ("Guten Morgen", "Good morning"),
+        ("Auf Wiedersehen", "Goodbye"),
+        ("Entschuldigung", "Excuse me"),
+        ("Wie geht es dir?", "How are you?"),
+        ("Ich heiße...", "My name is..."),
+        ("Wasser", "Water"),
+        ("Brot", "Bread"),
+        ("Buch", "Book"),
+        ("Haus", "House"),
+        ("Zeit", "Time"),
+        ("Freund", "Friend"),
+        ("Arbeit", "Work"),
+        ("Liebe", "Love"),
+        ("Tag", "Day"),
+        ("Nacht", "Night")
+    ]
+}
+
+private struct SettingsView: View {
+    /// When set, words per session is capped by this (e.g. total words in selected boxes). Otherwise cap at 50.
+    var maxWordsAvailable: Int? = nil
+
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("wordsPerSession") private var wordsPerSession: Int = 10
+    @AppStorage("hapticFeedbackEnabled") private var hapticFeedbackEnabled: Bool = true
+
+    private var effectiveMaxWords: Int {
+        max(1, min(50, maxWordsAvailable ?? 50))
+    }
+
+    var body: some View {
+        List {
+            Section {
+                HStack {
+                    Text("Words per session")
+                        .font(.system(.body, design: .rounded))
+                    Spacer()
+                    Picker("Words per session", selection: $wordsPerSession) {
+                        ForEach(1...effectiveMaxWords, id: \.self) { n in
+                            Text("\(n)").tag(n)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .tint(ModalStyle.linguAIGreen)
+                }
+            } header: {
+                Text("Session")
+                    .font(.system(.subheadline, design: .rounded).weight(.semibold))
+            }
+
+            Section {
+                Toggle(isOn: $hapticFeedbackEnabled) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "iphone.radiowaves.left.and.right")
+                            .font(.system(.body, design: .rounded))
+                            .foregroundStyle(ModalStyle.linguAIGreen)
+                        Text("Haptic Feedback")
+                            .font(.system(.body, design: .rounded))
+                    }
+                }
+                .tint(ModalStyle.linguAIGreen)
+            } header: {
+                Text("Feedback")
+                    .font(.system(.subheadline, design: .rounded).weight(.semibold))
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Color(uiColor: .systemGroupedBackground))
+        .navigationTitle("Settings")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Done") {
+                    dismiss()
+                }
+                .font(.system(.body, design: .rounded).weight(.semibold))
+                .foregroundStyle(ModalStyle.linguAIGreen)
+            }
+        }
+        .onAppear {
+            wordsPerSession = min(max(1, wordsPerSession), effectiveMaxWords)
+        }
     }
 }
 

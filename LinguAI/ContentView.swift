@@ -24,11 +24,12 @@ struct ContentView: View {
         Color(.systemGreen)
     }
 
-    private static let categories: [(title: String, subtitle: String, systemImage: String, isActive: Bool)] = [
-        ("Grammar", "Rules & exercises", "text.cursor", false),
-        ("Vocabulary box", "Words & phrases", "shippingbox", true),
-        ("Reading", "Comprehension practice", "book.closed", false),
-        ("Chat", "Talk with AI tutor", "bubble.left.and.bubble.right", false)
+    // Order: top row Reading (left), Vocabulary box (right); bottom row Grammar (left), Chat (right)
+    private static let categories: [(title: String, subtitle: String, systemImage: String, isActive: Bool, isBlurredTeaser: Bool)] = [
+        ("Reading", "Comprehension practice", "book.closed", false, false),
+        ("Vocabulary box", "Words & phrases", "shippingbox", true, false),
+        ("Grammar", "Rules & exercises", "text.cursor", false, true),
+        ("Chat", "Talk with AI tutor", "bubble.left.and.bubble.right", false, true)
     ]
 
     var body: some View {
@@ -109,6 +110,7 @@ struct ContentView: View {
                     subtitle: category.subtitle,
                     systemImage: category.systemImage,
                     isActive: category.isActive,
+                    isBlurredTeaser: category.isBlurredTeaser,
                     badgeText: category.isActive ? nil : "Coming soon",
                     action: category.isActive ? { navigationPath.append(AppRoute.vocabularyBoxes) } : nil
                 )
@@ -121,6 +123,7 @@ struct ContentView: View {
         subtitle: String,
         systemImage: String,
         isActive: Bool = true,
+        isBlurredTeaser: Bool = false,
         badgeText: String? = nil,
         action: (() -> Void)?
     ) -> some View {
@@ -136,59 +139,62 @@ struct ContentView: View {
             ? primaryGreen.opacity(0.18)
             : Color.black.opacity(0.04)
 
+        let cardContent = VStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.title2.weight(.semibold))
+                .foregroundColor(.white)
+                .padding(10)
+                .background(
+                    Circle()
+                        .fill(isActive ? primaryGreen.opacity(0.9) : Color(.systemGray3))
+                )
+
+            VStack(spacing: 4) {
+                Text(title)
+                    .font(.headline)
+                    .foregroundColor(isActive ? .primary : .secondary)
+
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .multilineTextAlignment(.center)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 160, maxHeight: 160)
+        .blur(radius: isBlurredTeaser ? 6 : 0)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(background)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(border, lineWidth: 1)
+                )
+                .shadow(color: shadowColor, radius: 8, x: 0, y: 4)
+        )
+        .overlay(alignment: .topTrailing) {
+            if let badgeText, !isActive {
+                Text(badgeText)
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(Color(.systemOrange))
+                    )
+                    .foregroundColor(.white)
+                    .padding(.top, 6)
+                    .padding(.trailing, 6)
+            }
+        }
+
         return Button {
             if isActive {
                 action?()
             }
         } label: {
-            VStack(spacing: 10) {
-                Image(systemName: systemImage)
-                    .font(.title2.weight(.semibold))
-                    .foregroundColor(.white)
-                    .padding(10)
-                    .background(
-                        Circle()
-                            .fill(isActive ? primaryGreen.opacity(0.9) : Color(.systemGray3))
-                    )
-
-                VStack(spacing: 4) {
-                    Text(title)
-                        .font(.headline)
-                        .foregroundColor(isActive ? .primary : .secondary)
-
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .multilineTextAlignment(.center)
-            }
-            .padding(16)
-            .frame(maxWidth: .infinity, minHeight: 160, maxHeight: 160)
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(background)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(border, lineWidth: 1)
-                    )
-                    .shadow(color: shadowColor, radius: 8, x: 0, y: 4)
-            )
-            .overlay(alignment: .topTrailing) {
-                if let badgeText, !isActive {
-                    Text(badgeText)
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(Color(.systemOrange))
-                        )
-                        .foregroundColor(.white)
-                        .padding(.top, 6)
-                        .padding(.trailing, 6)
-                }
-            }
+            cardContent
         }
         .buttonStyle(.plain)
         .allowsHitTesting(isActive)
