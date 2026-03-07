@@ -4,6 +4,8 @@
 //
 
 import SwiftUI
+import SwiftData
+import Translation
 
 // MARK: - Shared modal aesthetic & LinguAI branding
 private enum ModalStyle {
@@ -19,34 +21,65 @@ private enum ModalStyle {
     static let emptyCardShadowRadius: CGFloat = 20
     static let fabShadowRadius: CGFloat = 12
     static let fabShadowY: CGFloat = 8
-    /// Compact sheet height for New/Edit box – keeps input in thumb reach (one-handed use).
-    static let newBoxSheetHeight: CGFloat = 320
+    /// Sheet height for New/Edit box – extended so Save button sits higher with minimal gap below.
+    static let newBoxSheetHeight: CGFloat = 340
 }
 
 private extension Font {
     static let linguAIRounded = Font.system(.body, design: .rounded)
 }
 
-struct VocabularyBox: Identifiable, Hashable {
-    let id = UUID()
-    var name: String
-    var progress: Double
-    var wordCount: Int
+// MARK: - Box language support (for Language Direction + Smart Translate)
+private enum BoxLanguage {
+    /// Language codes we offer in the New Box sheet. Subset that works well with Translation + vocabulary.
+    static let supportedCodes: [String] = [
+        "de", "en", "es", "fr", "it", "pt", "nl", "pl", "ru", "tr", "ja", "ko",
+        "zh-Hans", "zh-Hant", "ar", "hi", "th", "vi", "id", "sv", "da", "no", "fi"
+    ]
 
-    init(name: String, progress: Double = 0.0, wordCount: Int = 0) {
-        self.name = name
-        self.progress = progress
-        self.wordCount = wordCount
+    static func displayName(for code: String) -> String {
+        Locale.current.localizedString(forLanguageCode: code) ?? Locale.current.localizedString(forIdentifier: code) ?? code
+    }
+
+    /// Emoji flag for a language code (uses main region when ambiguous, e.g. de → DE).
+    static func flag(for code: String) -> String {
+        let region = Self.regionCode(for: code)
+        let scalars = region.utf16.map { Unicode.Scalar(0x1F1E6 - 65 + Int($0))! }
+        return String(String.UnicodeScalarView(scalars))
+    }
+
+    private static func regionCode(for languageCode: String) -> String {
+        let map: [String: String] = [
+            "de": "DE", "en": "US", "es": "ES", "fr": "FR", "it": "IT", "pt": "PT",
+            "nl": "NL", "pl": "PL", "ru": "RU", "tr": "TR", "ja": "JP", "ko": "KR",
+            "zh-Hans": "CN", "zh-Hant": "TW", "ar": "SA", "hi": "IN", "th": "TH",
+            "vi": "VN", "id": "ID", "sv": "SE", "da": "DK", "no": "NO", "fi": "FI"
+        ]
+        return map[languageCode] ?? languageCode.prefix(2).uppercased().description
     }
 }
 
+/// Target languages for the New Box sheet – text-only display.
+private enum NewBoxTargetLanguages {
+    static let options: [(name: String, code: String)] = [
+        ("German", "de"),
+        ("Italian", "it"),
+        ("Spanish", "es"),
+        ("Dutch", "nl"),
+        ("French", "fr")
+    ]
+    static let noSelectionCode = ""
+}
+
 struct VocabularyBoxesView: View {
-    @State private var boxes: [VocabularyBox] = []
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \VocabularyBox.name) private var boxes: [VocabularyBox]
+
     @State private var isPresentingBoxEditor = false
     @State private var newBoxName: String = ""
     @State private var nameError: String?
 
-    @State private var editingBoxID: UUID?
+    @State private var editingBox: VocabularyBox?
 
     @State private var pendingDeleteOffsets: IndexSet?
     @State private var isShowingDeleteConfirmation = false
@@ -62,6 +95,7 @@ struct VocabularyBoxesView: View {
     @FocusState private var isNewBoxNameFocused: Bool
     @State private var isShowingHowTo = false
     @State private var newBoxSheetDetent: PresentationDetent = .height(ModalStyle.newBoxSheetHeight)
+    @State private var newBoxTargetLanguageCode: String = NewBoxTargetLanguages.noSelectionCode
 
     var body: some View {
         ZStack {
@@ -121,7 +155,9 @@ struct VocabularyBoxesView: View {
         .alert("Delete box?", isPresented: $isShowingDeleteConfirmation) {
             Button("Delete", role: .destructive) {
                 if let offsets = pendingDeleteOffsets {
-                    boxes.remove(atOffsets: offsets)
+                    for index in offsets.sorted(by: >) {
+                        modelContext.delete(boxes[index])
+                    }
                 }
                 pendingDeleteOffsets = nil
             }
@@ -245,17 +281,20 @@ struct VocabularyBoxesView: View {
     }
 
     private var newBoxSheet: some View {
-        let isEditing = editingBoxID != nil
-        let isSaveDisabled = newBoxName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let isEditing = editingBox != nil
+        let nameEmpty = newBoxName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let noLanguageSelected = newBoxTargetLanguageCode.isEmpty
+        let isSaveDisabled = nameEmpty || noLanguageSelected
         return NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    VStack(alignment: .leading, spacing: 8) {
+                    // Box name
+                    VStack(alignment: .leading, spacing: 6) {
                         Text("Box name")
                             .font(.system(.subheadline, design: .rounded).weight(.semibold))
                             .foregroundStyle(.secondary)
                         TextField("e.g. \(currentSuggestion)", text: $newBoxName)
-                            .onChange(of: newBoxName) { newValue in
+                            .onChange(of: newBoxName) { _, newValue in
                                 if newValue.count > nameCharacterLimit {
                                     newBoxName = String(newValue.prefix(nameCharacterLimit))
                                 }
@@ -272,22 +311,54 @@ struct VocabularyBoxesView: View {
                                     )
                             )
                             .focused($isNewBoxNameFocused)
+                        Text("\(newBoxName.count)/\(nameCharacterLimit) characters")
+                            .font(.system(.caption, design: .rounded))
+                            .foregroundStyle(.secondary)
                     }
 
                     if let nameError {
                         Text(nameError)
                             .font(.system(.caption, design: .rounded))
                             .foregroundColor(.red)
-                            .padding(.top, 8)
+                            .padding(.top, 4)
                     }
 
-                    Text("\(newBoxName.count)/\(nameCharacterLimit) characters")
-                        .font(.system(.caption, design: .rounded))
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 8)
+                    // Target language – styled to match Box name field
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Target language")
+                            .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 10)
 
-                    Spacer(minLength: 24)
+                        Picker(selection: $newBoxTargetLanguageCode) {
+                            Text("Select language")
+                                .font(.system(.body, design: .rounded))
+                                .tag(NewBoxTargetLanguages.noSelectionCode)
+                            ForEach(NewBoxTargetLanguages.options, id: \.code) { option in
+                                Text(option.name)
+                                    .font(.system(.body, design: .rounded))
+                                    .tag(option.code)
+                            }
+                        } label: {
+                            EmptyView()
+                        }
+                        .pickerStyle(.menu)
+                        .tint(ModalStyle.linguAIGreen)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(.systemBackground))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(
+                                    noLanguageSelected ? Color.primary.opacity(0.15) : ModalStyle.linguAIGreen,
+                                    lineWidth: 1
+                                )
+                        )
+                    }
 
+                    Spacer(minLength: 8)
+
+                    // Save button – full width (matches input fields), rounded corners, SF Pro Rounded
                     Button {
                         saveBox()
                     } label: {
@@ -300,6 +371,7 @@ struct VocabularyBoxesView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                     .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity)
                     .frame(minHeight: 50)
                     .disabled(isSaveDisabled)
                     .opacity(isSaveDisabled ? ModalStyle.disabledButtonOpacity : 1)
@@ -327,23 +399,22 @@ struct VocabularyBoxesView: View {
     }
 
     private func boxRow(for box: VocabularyBox) -> some View {
-        HStack(spacing: 16) {
+        HStack(alignment: .center, spacing: 16) {
             progressCircle(for: box.progress)
 
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .center) {
-                    Text(box.name)
-                        .font(.headline)
-                        .lineLimit(1)
-
-                    Spacer()
-
-                    Text("\(box.wordCount) words")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(box.name)
+                    .font(.system(.headline, design: .rounded).weight(.bold))
+                    .lineLimit(1)
+                Text(BoxLanguage.displayName(for: box.targetLanguageCode))
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text("\(box.wordCount) words")
+                .font(.system(.caption, design: .rounded))
+                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 10)
         .frame(minHeight: 52)
@@ -377,16 +448,19 @@ struct VocabularyBoxesView: View {
     }
 
     private func startAddingBox() {
-        editingBoxID = nil
+        editingBox = nil
         newBoxName = ""
         nameError = nil
         currentSuggestion = Self.suggestionPool.randomElement() ?? "Greetings"
+        newBoxTargetLanguageCode = NewBoxTargetLanguages.noSelectionCode
         isPresentingBoxEditor = true
     }
 
     private func startRenaming(_ box: VocabularyBox) {
-        editingBoxID = box.id
+        editingBox = box
         newBoxName = box.name
+        let code = box.targetLanguageCode
+        newBoxTargetLanguageCode = NewBoxTargetLanguages.options.contains(where: { $0.code == code }) ? code : NewBoxTargetLanguages.noSelectionCode
         nameError = nil
         isPresentingBoxEditor = true
     }
@@ -394,24 +468,33 @@ struct VocabularyBoxesView: View {
     private func saveBox() {
         let trimmed = newBoxName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        guard !newBoxTargetLanguageCode.isEmpty else {
+            nameError = "Please select a target language."
+            return
+        }
 
         let isDuplicate = boxes.contains { existing in
             existing.name.caseInsensitiveCompare(trimmed) == .orderedSame &&
-            existing.id != editingBoxID
+            existing !== editingBox
         }
-
         guard !isDuplicate else {
             nameError = "A box with this name already exists."
             return
         }
 
-        if let editingBoxID,
-           let index = boxes.firstIndex(where: { $0.id == editingBoxID }) {
-            boxes[index].name = trimmed
+        if let editingBox {
+            editingBox.name = trimmed
+            editingBox.primaryLanguageCode = "en"
+            editingBox.targetLanguageCode = newBoxTargetLanguageCode
         } else {
-            boxes.append(VocabularyBox(name: trimmed))
+            let box = VocabularyBox(
+                name: trimmed,
+                targetLanguageCode: newBoxTargetLanguageCode,
+                primaryLanguageCode: "en"
+            )
+            modelContext.insert(box)
         }
-
+        try? modelContext.save()
         dismissAddBox()
     }
 
@@ -424,49 +507,67 @@ struct VocabularyBoxesView: View {
         isNewBoxNameFocused = false
         newBoxName = ""
         nameError = nil
-        editingBoxID = nil
-        isPresentingBoxEditor = false
+        editingBox = nil
+        newBoxTargetLanguageCode = NewBoxTargetLanguages.noSelectionCode
+        withAnimation(.easeOut(duration: 0.25)) {
+            isPresentingBoxEditor = false
+        }
     }
 }
 
 struct VocabularyBoxDetailView: View {
     let box: VocabularyBox
+    @Environment(\.modelContext) private var modelContext
 
-    @State private var tableRows: [ModernDataTableRow] = ModernDataTableRow.sampleTwentyRows
     @State private var isShowingAddWord = false
     @State private var germanInput = ""
     @State private var englishInput = ""
     @State private var addWordError: String?
 
     @State private var isShowingEditWord = false
-    @State private var editingRow: ModernDataTableRow?
+    @State private var editingWord: BoxWord?
     @State private var editGermanInput = ""
     @State private var editEnglishInput = ""
     @State private var editWordError: String?
 
-    @State private var rowToDelete: ModernDataTableRow?
+    @State private var wordToDelete: BoxWord?
     @State private var isShowingDeleteWordConfirmation = false
     @FocusState private var addWordFocusedField: Int?
     @FocusState private var editWordFocusedField: Int?
+    @State private var isTranslating = false
+    @State private var translationConfiguration: TranslationSession.Configuration?
+    @State private var textToTranslateForTask: String?
     @State private var isShowingSettings = false
     @State private var isShowingStudy = false
     @State private var wordSheetDetent: PresentationDetent = .medium
 
+    private var primaryLanguageName: String { BoxLanguage.displayName(for: box.primaryLanguageCode) }
+    private var targetLanguageName: String { BoxLanguage.displayName(for: box.targetLanguageCode) }
+
+    private var tableRows: [ModernDataTableRow] {
+        box.words.sorted { $0.createdAt > $1.createdAt }.map {
+            ModernDataTableRow(id: $0.uuid, column1: $0.primaryText, column2: $0.targetText)
+        }
+    }
+
+    /// Set to true to show the Smart Translate button between source and target fields in Add word sheet.
+    private let showTranslateButton = false
+
     var body: some View {
         ZStack {
             ModernDataTableView(
-                header1: "German",
-                header2: "English",
+                header1: primaryLanguageName,
+                header2: targetLanguageName,
                 rows: tableRows,
                 onEdit: { row in
-                    editingRow = row
+                    editingWord = box.words.first { $0.uuid == row.id }
                     editGermanInput = row.column1
                     editEnglishInput = row.column2
                     editWordError = nil
                     isShowingEditWord = true
                 },
                 onDelete: { row in
-                    rowToDelete = row
+                    wordToDelete = box.words.first { $0.uuid == row.id }
                     isShowingDeleteWordConfirmation = true
                 }
             )
@@ -490,11 +591,11 @@ struct VocabularyBoxDetailView: View {
         }
         .sheet(isPresented: $isShowingSettings) {
             NavigationStack {
-                SettingsView(maxWordsAvailable: box.wordCount)
+                SettingsView(box: box, maxWordsAvailable: box.wordCount)
             }
         }
         .navigationDestination(isPresented: $isShowingStudy) {
-            StudyView()
+            StudyView(box: box)
         }
         .sheet(isPresented: $isShowingAddWord) {
             addWordSheet
@@ -508,13 +609,14 @@ struct VocabularyBoxDetailView: View {
         .onChange(of: isShowingEditWord) { _, show in if show { wordSheetDetent = .medium } }
         .alert("Delete word?", isPresented: $isShowingDeleteWordConfirmation) {
             Button("Delete", role: .destructive) {
-                if let row = rowToDelete {
-                    tableRows.removeAll { $0.id == row.id }
+                if let word = wordToDelete {
+                    modelContext.delete(word)
+                    try? modelContext.save()
                 }
-                rowToDelete = nil
+                wordToDelete = nil
             }
             Button("Cancel", role: .cancel) {
-                rowToDelete = nil
+                wordToDelete = nil
             }
         } message: {
             Text("This word will be removed from the table. This cannot be undone.")
@@ -559,37 +661,202 @@ struct VocabularyBoxDetailView: View {
 
     private var addWordSheet: some View {
         NavigationStack {
-            floatingModalContent(
-                title: "Add word",
-                primaryButtonTitle: "Add",
-                primaryAction: addWord,
-                closeAction: { isShowingAddWord = false },
-                isPrimaryDisabled: germanInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || englishInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                errorMessage: addWordError,
-                focusedFieldIndex: $addWordFocusedField,
-                sheetDetent: $wordSheetDetent,
-                fields: [
-                    ("German word", "e.g. Hallo", $germanInput),
-                    ("English word", "e.g. Hello", $englishInput)
-                ]
-            )
+            addWordSheetBody
+                .translationTask(translationConfiguration) { session in
+                    await runTranslation(using: session)
+                }
+        }
+    }
+
+    private var addWordSheetBody: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    // Primary language word field
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("\(primaryLanguageName) word")
+                            .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        TextField("e.g. \(primaryLanguageName)", text: $germanInput)
+                            .textInputAutocapitalization(.never)
+                            .textFieldStyle(.plain)
+                            .font(.system(.body, design: .rounded))
+                            .padding(12)
+                            .background(Color(.systemBackground))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .strokeBorder(
+                                        addWordFocusedField == 0
+                                            ? ModalStyle.linguAIGreen
+                                            : Color.primary.opacity(0.15),
+                                        lineWidth: 1
+                                    )
+                            )
+                            .focused($addWordFocusedField, equals: 0)
+                    }
+                    .padding(.bottom, 12)
+
+                    if showTranslateButton {
+                        // Translate icon between fields
+                        HStack {
+                            Spacer(minLength: 0)
+                            if isTranslating {
+                                ProgressView()
+                                    .scaleEffect(0.9)
+                                    .tint(ModalStyle.linguAIGreen)
+                            } else {
+                                Button {
+                                    triggerTranslation()
+                                } label: {
+                                    Image(systemName: "character.bubble")
+                                        .font(.system(.title2, design: .rounded).weight(.medium))
+                                }
+                                .foregroundStyle(canTranslate ? ModalStyle.linguAIGreen : Color.primary.opacity(0.25))
+                                .disabled(!canTranslate)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .frame(height: 44)
+                    }
+
+                    // Target language word field (tight spacing below primary field)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("\(targetLanguageName) word")
+                            .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        TextField("e.g. \(targetLanguageName)", text: $englishInput)
+                            .textInputAutocapitalization(.never)
+                            .textFieldStyle(.plain)
+                            .font(.system(.body, design: .rounded))
+                            .padding(12)
+                            .background(Color(.systemBackground))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .strokeBorder(
+                                        addWordFocusedField == 1
+                                            ? ModalStyle.linguAIGreen
+                                            : Color.primary.opacity(0.15),
+                                        lineWidth: 1
+                                    )
+                            )
+                            .focused($addWordFocusedField, equals: 1)
+                            .overlay(
+                                Group {
+                                    if showTranslateButton, isTranslating {
+                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                            .fill(ModalStyle.linguAIGreen.opacity(0.06))
+                                    }
+                                }
+                            )
+                    }
+
+                    if let addWordError {
+                        Text(addWordError)
+                            .font(.system(.caption, design: .rounded))
+                            .foregroundColor(.red)
+                    }
+                }
+                .padding(ModalStyle.edgePadding)
+            }
+            .scrollDismissesKeyboard(.interactively)
+
+            // Add button pinned to bottom of sheet
+            Button(action: addWord) {
+                Text("Add")
+                    .font(.system(.body, design: .rounded).weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(ModalStyle.linguAIGreen)
+                    .foregroundColor(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .frame(minHeight: 50)
+            .disabled(germanInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || englishInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .opacity((germanInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || englishInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                ? ModalStyle.disabledButtonOpacity : 1)
+            .padding(.horizontal, ModalStyle.edgePadding)
+            .padding(.top, 16)
+            .padding(.bottom, 24)
+            .background(Color(.systemBackground))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Text("Add word")
+                    .font(.system(.headline, design: .rounded).weight(.bold))
+            }
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { isShowingAddWord = false }
+                    .font(.system(.body, design: .rounded))
+                    .foregroundStyle(ModalStyle.linguAIGreen)
+            }
+        }
+        .presentationDetents([.medium, .large], selection: $wordSheetDetent)
+        .presentationDragIndicator(.visible)
+    }
+
+    private var canTranslate: Bool {
+        !germanInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func triggerTranslation() {
+        guard canTranslate else { return }
+        addWordError = nil
+        let text = germanInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        textToTranslateForTask = text
+        isTranslating = true
+        if translationConfiguration != nil {
+            translationConfiguration?.invalidate()
+        }
+        let source = Locale.Language(identifier: box.primaryLanguageCode)
+        let target = Locale.Language(identifier: box.targetLanguageCode)
+        translationConfiguration = .init(source: source, target: target)
+    }
+
+    private func runTranslation(using session: TranslationSession) async {
+        guard let text = textToTranslateForTask else { return }
+        do {
+            let response = try await session.translate(text)
+            await MainActor.run {
+                englishInput = response.targetText
+            }
+        } catch {
+            await MainActor.run {
+                addWordError = "Translation failed. Check language models in Settings."
+            }
+        }
+        await MainActor.run {
+            isTranslating = false
+            textToTranslateForTask = nil
         }
     }
 
     private func addWord() {
-        let german = germanInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let english = englishInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let primary = germanInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let target = englishInput.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if german.isEmpty || english.isEmpty {
+        if primary.isEmpty || target.isEmpty {
             addWordError = "Both fields are mandatory."
             return
         }
 
-        tableRows.insert(
-            ModernDataTableRow(column1: german, column2: english),
-            at: 0
-        )
+        let isDuplicate = box.words.contains {
+            $0.primaryText.caseInsensitiveCompare(primary) == .orderedSame &&
+            $0.targetText.caseInsensitiveCompare(target) == .orderedSame
+        }
+        guard !isDuplicate else {
+            addWordError = "This word pair already exists in the box."
+            return
+        }
+
+        let word = BoxWord(primaryText: primary, targetText: target, level: 1, box: box)
+        modelContext.insert(word)
+        try? modelContext.save()
         addWordError = nil
         germanInput = ""
         englishInput = ""
@@ -609,8 +876,8 @@ struct VocabularyBoxDetailView: View {
                 focusedFieldIndex: $editWordFocusedField,
                 sheetDetent: $wordSheetDetent,
                 fields: [
-                    ("German word", "e.g. Hallo", $editGermanInput),
-                    ("English word", "e.g. Hello", $editEnglishInput)
+                    ("\(primaryLanguageName) word", "e.g. \(primaryLanguageName)", $editGermanInput),
+                    ("\(targetLanguageName) word", "e.g. \(targetLanguageName)", $editEnglishInput)
                 ]
             )
         }
@@ -699,24 +966,20 @@ struct VocabularyBoxDetailView: View {
     }
 
     private func saveEditedWord() {
-        guard let editingRow else { return }
-        let german = editGermanInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let english = editEnglishInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let editingWord else { return }
+        let primary = editGermanInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let target = editEnglishInput.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if german.isEmpty || english.isEmpty {
+        if primary.isEmpty || target.isEmpty {
             editWordError = "Both fields are mandatory."
             return
         }
 
-        if let index = tableRows.firstIndex(where: { $0.id == editingRow.id }) {
-            tableRows[index] = ModernDataTableRow(
-                id: editingRow.id,
-                column1: german,
-                column2: english
-            )
-        }
+        editingWord.primaryText = primary
+        editingWord.targetText = target
+        try? modelContext.save()
         editWordError = nil
-        self.editingRow = nil
+        self.editingWord = nil
         editGermanInput = ""
         editEnglishInput = ""
         isShowingEditWord = false
@@ -724,6 +987,13 @@ struct VocabularyBoxDetailView: View {
 }
 
 // MARK: - Box Progression (Study) screen
+private struct BoxFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [Int: CGRect] { [:] }
+    static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, n in n })
+    }
+}
+
 private struct BoxProgressionLevel: Identifiable {
     let id: Int
     let levelNumber: Int
@@ -732,6 +1002,8 @@ private struct BoxProgressionLevel: Identifiable {
 }
 
 private struct StudyView: View {
+    var box: VocabularyBox
+
     private static let cardCornerRadius: CGFloat = 30
     private static let cardShadowRadius: CGFloat = 12
     private static let cardShadowY: CGFloat = 6
@@ -750,15 +1022,28 @@ private struct StudyView: View {
     @State private var isShowingSettings = false
     @State private var isShowingSession = false
 
-    private static var levels: [BoxProgressionLevel] {
-        [
-            BoxProgressionLevel(id: 1, levelNumber: 1, wordCount: 48, progress: 0.85),
-            BoxProgressionLevel(id: 2, levelNumber: 2, wordCount: 124, progress: 0.6),
-            BoxProgressionLevel(id: 3, levelNumber: 3, wordCount: 89, progress: 0.3),
-            BoxProgressionLevel(id: 4, levelNumber: 4, wordCount: 52, progress: 0.1),
-            BoxProgressionLevel(id: 5, levelNumber: 5, wordCount: 180, progress: 0.55),
-            BoxProgressionLevel(id: 6, levelNumber: 6, wordCount: 352, progress: 0.42)
-        ]
+    @State private var levelWordCounts: [Int: Int] = [:]
+    @State private var boxFrames: [Int: CGRect] = [:]
+    @State private var isShowingAnimation = false
+    @State private var activeMoves: [(from: Int, to: Int, count: Int, isSuccess: Bool)] = []
+    @State private var popBoxID: Int? = nil
+    @State private var popScale: CGFloat = 1
+
+    private var levels: [BoxProgressionLevel] {
+        (1...6).map { levelNum in
+            let count = levelWordCounts[levelNum] ?? 0
+            let total = max(1, box.words.count)
+            let progress = Double(count) / Double(total)
+            return BoxProgressionLevel(id: levelNum, levelNumber: levelNum, wordCount: count, progress: progress)
+        }
+    }
+
+    private func refreshLevelCounts() {
+        var counts: [Int: Int] = [:]
+        for level in 1...6 {
+            counts[level] = box.words.filter { $0.level == level }.count
+        }
+        levelWordCounts = counts
     }
 
     var body: some View {
@@ -767,28 +1052,45 @@ private struct StudyView: View {
                 VStack(spacing: Self.gridSpacing) {
                     // Row 1: Levels 1 and 2
                     HStack(spacing: Self.gridSpacing) {
-                        progressionCard(Self.levels[0])
-                        progressionCard(Self.levels[1])
+                        progressionCard(levels[0])
+                        progressionCard(levels[1])
                     }
 
                     // Row 2: Levels 3 and 4
                     HStack(spacing: Self.gridSpacing) {
-                        progressionCard(Self.levels[2])
-                        progressionCard(Self.levels[3])
+                        progressionCard(levels[2])
+                        progressionCard(levels[3])
                     }
 
                     // Row 3: Levels 5 and 6
                     HStack(spacing: Self.gridSpacing) {
-                        progressionCard(Self.levels[4])
-                        progressionCard(Self.levels[5])
+                        progressionCard(levels[4])
+                        progressionCard(levels[5])
                     }
+
+                    Button("Debug: Test Animation") {
+                        runMockAnimation()
+                    }
+                    .font(.system(.caption, design: .rounded).weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 24)
+                    .padding(.bottom, 32)
                 }
                 .padding(Self.edgePadding)
                 .padding(.bottom, 72)
+                .coordinateSpace(name: "boxProgression")
+                .onPreferenceChange(BoxFramePreferenceKey.self) { boxFrames = $0 }
+                .overlay {
+                    if isShowingAnimation, !activeMoves.isEmpty {
+                        flyingBadgesOverlay
+                    }
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("Box Progression")
+            .onAppear { refreshLevelCounts() }
+            .onChange(of: isShowingSession) { _, showing in if !showing { refreshLevelCounts() } }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -803,14 +1105,13 @@ private struct StudyView: View {
             }
             .sheet(isPresented: $isShowingSettings) {
                 NavigationStack {
-                    SettingsView(maxWordsAvailable: totalWordsInSelectedLevels)
+                    SettingsView(box: box, maxWordsAvailable: totalWordsInSelectedLevels)
                 }
             }
             .navigationDestination(isPresented: $isShowingSession) {
                 StudySessionView(
-                    wordPairs: StudySessionView.sampleWordPairs,
-                    sourceLanguageLabel: "German",
-                    translationLanguageLabel: "English",
+                    box: box,
+                    selectedLevelIDs: selectedLevelIDs,
                     onFinish: { isShowingSession = false }
                 )
             }
@@ -820,16 +1121,16 @@ private struct StudyView: View {
     }
 
     private var totalWordsInSelectedLevels: Int {
-        Self.levels.filter { selectedLevelIDs.contains($0.id) }.map(\.wordCount).reduce(0, +)
+        levels.filter { selectedLevelIDs.contains($0.id) }.map(\.wordCount).reduce(0, +)
     }
 
     private var startFloatingButton: some View {
-        let count = selectedLevelIDs.count
-        let isDisabled = count == 0
+        let wordCount = totalWordsInSelectedLevels
+        let isDisabled = wordCount == 0
         return Button {
             isShowingSession = true
         } label: {
-            Text("Start (\(count))")
+            Text("Start (\(wordCount))")
                 .font(.system(.subheadline, design: .rounded).weight(.semibold))
                 .foregroundStyle(isDisabled ? .secondary : ModalStyle.linguAIGreen)
         }
@@ -845,11 +1146,12 @@ private struct StudyView: View {
 
     private func progressionCard(_ level: BoxProgressionLevel) -> some View {
         let isSelected = selectedLevelIDs.contains(level.id)
+        let count = level.wordCount
+        let isPopping = popBoxID == level.id
         return Button {
             toggleSelection(level.id)
         } label: {
             VStack(spacing: 12) {
-                // Top: Level number in badge (faint green background)
                 ZStack {
                     Circle()
                         .fill(ModalStyle.linguAIGreen.opacity(Self.levelBadgeGreenOpacity))
@@ -859,21 +1161,20 @@ private struct StudyView: View {
                 }
                 .frame(width: Self.levelBadgeSize, height: Self.levelBadgeSize)
 
-                // Middle: count
-                Text("\(level.wordCount)")
+                Text("\(count)")
                     .font(.system(.title3, design: .rounded).weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .scaleEffect(isPopping ? popScale : 1)
 
                 Spacer(minLength: 0)
 
-                // Bottom: thin progress bar (line)
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         RoundedRectangle(cornerRadius: Self.progressBarHeight / 2, style: .continuous)
                             .fill(ModalStyle.linguAIGreen.opacity(Self.progressTrackOpacity))
                         RoundedRectangle(cornerRadius: Self.progressBarHeight / 2, style: .continuous)
                             .fill(ModalStyle.linguAIGreen)
-                            .frame(width: max(0, geo.size.width * level.progress))
+                            .frame(width: max(0, geo.size.width * CGFloat(level.progress)))
                     }
                 }
                 .frame(height: Self.progressBarHeight)
@@ -904,6 +1205,77 @@ private struct StudyView: View {
         .buttonStyle(ProgressionCardButtonStyle())
         .frame(maxWidth: .infinity)
         .frame(height: Self.cardHeight)
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: BoxFramePreferenceKey.self,
+                    value: [level.id: geo.frame(in: .named("boxProgression"))]
+                )
+            }
+        )
+    }
+
+    private var flyingBadgesOverlay: some View {
+        GeometryReader { geo in
+            ZStack {
+                ForEach(Array(activeMoves.enumerated()), id: \.offset) { index, move in
+                    if let fromRect = boxFrames[move.from], let toRect = boxFrames[move.to] {
+                        FlyingBadgeView(
+                            fromRect: fromRect,
+                            toRect: toRect,
+                            count: move.count,
+                            isSuccess: move.isSuccess,
+                            startDelay: Double(index) * 0.1,
+                            onLand: { },
+                            onBurstStart: { applyMoveAndPop(move: move) },
+                            onExitComplete: { removeMove(move) }
+                        )
+                    }
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
+    private func runMockAnimation() {
+        refreshLevelCounts()
+        popBoxID = nil
+        popScale = 1
+        isShowingAnimation = true
+        activeMoves = [
+            (from: 1, to: 2, count: 3, isSuccess: true),
+            (from: 4, to: 5, count: 2, isSuccess: true),
+            (from: 3, to: 1, count: 1, isSuccess: false)
+        ]
+    }
+
+    /// Called at burst start: update counts and subtle number bump. No card frame/color change.
+    private func applyMoveAndPop(move: (from: Int, to: Int, count: Int, isSuccess: Bool)) {
+        UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+        if move.isSuccess {
+            levelWordCounts[move.from, default: 0] -= move.count
+            levelWordCounts[move.to, default: 0] += move.count
+        } else {
+            levelWordCounts[move.from, default: 0] -= move.count
+            levelWordCounts[move.to, default: 0] += move.count
+        }
+        popBoxID = move.to
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
+            popScale = 1.1
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            withAnimation(.easeOut(duration: 0.15)) {
+                popScale = 1
+                popBoxID = nil
+            }
+        }
+    }
+
+    private func removeMove(_ move: (from: Int, to: Int, count: Int, isSuccess: Bool)) {
+        activeMoves.removeAll { $0.from == move.from && $0.to == move.to && $0.count == move.count }
+        if activeMoves.isEmpty {
+            isShowingAnimation = false
+        }
     }
 
     private func toggleSelection(_ levelID: Int) {
@@ -916,6 +1288,123 @@ private struct StudyView: View {
     }
 }
 
+// MARK: - Flying badge (post-session word movement)
+private struct FlyingBadgeView: View {
+    let fromRect: CGRect
+    let toRect: CGRect
+    let count: Int
+    let isSuccess: Bool
+    var startDelay: Double = 0
+    let onLand: () -> Void
+    let onBurstStart: () -> Void
+    let onExitComplete: () -> Void
+
+    private static let flyDuration: Double = 1.5
+    /// Badge stays stuck at corner for this long before burst.
+    private static let stickDuration: Double = 2.0
+    private static let explosionDuration: Double = 0.5
+    private static let particleCount: Int = 12
+
+    /// Upper-right corner of target card, slightly overlapping the border (badge anchor).
+    private static let cornerInset: CGFloat = 18
+
+    @State private var progress: CGFloat = 0
+    @State private var hasLanded = false
+    @State private var hasStarted = false
+    @State private var isExploding = false
+    @State private var explosionProgress: CGFloat = 0
+    @State private var badgeVisible = true
+
+    private var fromCenter: CGPoint {
+        CGPoint(x: fromRect.midX, y: fromRect.midY)
+    }
+    /// Landing spot: upper-right corner of target card.
+    private var landingPosition: CGPoint {
+        CGPoint(x: toRect.maxX - Self.cornerInset, y: toRect.minY + Self.cornerInset)
+    }
+    private var controlPoint: CGPoint {
+        let midX = (fromCenter.x + landingPosition.x) / 2
+        let arcY = min(fromCenter.y, landingPosition.y) - 50
+        return CGPoint(x: midX, y: arcY)
+    }
+    private var currentPosition: CGPoint {
+        let t = progress
+        let x = (1 - t) * (1 - t) * fromCenter.x + 2 * (1 - t) * t * controlPoint.x + t * t * landingPosition.x
+        let y = (1 - t) * (1 - t) * fromCenter.y + 2 * (1 - t) * t * controlPoint.y + t * t * landingPosition.y
+        return CGPoint(x: x, y: y)
+    }
+    private var badgeColor: Color {
+        isSuccess ? ModalStyle.linguAIGreen : Color(.systemRed)
+    }
+
+    var body: some View {
+        let label = isSuccess ? "+\(count)" : "-\(count)"
+        ZStack {
+            if badgeVisible {
+                Circle()
+                    .fill(badgeColor.opacity(0.95))
+                    .overlay(
+                        Text(label)
+                            .font(.system(size: 16, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                    )
+                    .frame(width: 36, height: 36)
+                    .position(currentPosition)
+                    .opacity(isExploding ? 0 : (hasStarted ? 1 : 0))
+                if isExploding {
+                    explosionParticles
+                }
+            }
+        }
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + startDelay) {
+                hasStarted = true
+                withAnimation(.easeInOut(duration: Self.flyDuration)) {
+                    progress = 1
+                }
+            }
+        }
+        .onChange(of: progress) { _, newValue in
+            if newValue >= 0.99, !hasLanded {
+                hasLanded = true
+                onLand()
+                // 1. Stick: keep badge still at corner for 2.0s. Do not hide or burst yet.
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.stickDuration) {
+                    // 2. Burst: trigger at this exact coordinate; simultaneously hide badge (opacity 0).
+                    onBurstStart()
+                    isExploding = true
+                    withAnimation(.easeOut(duration: Self.explosionDuration)) {
+                        explosionProgress = 1
+                    }
+                    // 4. Don't clear the flying view until burst has fully finished (0.5s).
+                    DispatchQueue.main.asyncAfter(deadline: .now() + Self.explosionDuration) {
+                        onExitComplete()
+                    }
+                }
+            }
+        }
+    }
+
+    private var explosionParticles: some View {
+        let origin = landingPosition
+        return ZStack {
+            ForEach(0..<Self.particleCount, id: \.self) { i in
+                let angle = CGFloat(i) * (360 / CGFloat(Self.particleCount)) * .pi / 180
+                let radius: CGFloat = 28 * explosionProgress
+                let x = origin.x + cos(angle) * radius
+                let y = origin.y + sin(angle) * radius
+                Circle()
+                    .fill(badgeColor)
+                    .frame(width: 6, height: 6)
+                    .scaleEffect(0.6 + explosionProgress * 1.4)
+                    .opacity(Double(1 - explosionProgress))
+                    .position(x: x, y: y)
+            }
+        }
+        .animation(.easeOut(duration: Self.explosionDuration), value: explosionProgress)
+    }
+}
+
 private struct ProgressionCardButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -924,21 +1413,63 @@ private struct ProgressionCardButtonStyle: ButtonStyle {
     }
 }
 
-// MARK: - Study Session
-private struct StudySessionView: View {
-    typealias WordPair = (native: String, translation: String)
+// MARK: - Confetti (completion celebration)
+private struct ConfettiView: View {
+    private static let particleCount = 55
+    private static let colors: [Color] = [
+        ModalStyle.linguAIGreen,
+        Color(.systemRed),
+        Color(.systemOrange),
+        Color(.systemYellow),
+        Color(.systemBlue),
+        Color(.systemPurple)
+    ]
+    @State private var dropProgress: CGFloat = 0
 
-    var wordPairs: [WordPair]
-    /// Source language (primary word), shown in header badge and above the main word when revealed.
-    var sourceLanguageLabel: String = "German"
-    /// Translation language, shown above the translation when revealed.
-    var translationLanguageLabel: String = "English"
+    var body: some View {
+        GeometryReader { geo in
+            let width = geo.size.width
+            let height = geo.size.height
+            let fallDistance = height + 80
+            ZStack {
+                ForEach(0..<Self.particleCount, id: \.self) { i in
+                    let x = (CGFloat(i) * 31 + 19).truncatingRemainder(dividingBy: width)
+                    let color = Self.colors[i % Self.colors.count]
+                    let delay = Double(i % 7) * 0.04
+                    let size: CGFloat = [6, 7, 8, 9][i % 4]
+                    RoundedRectangle(cornerRadius: size / 3, style: .continuous)
+                        .fill(color)
+                        .frame(width: size, height: size * CGFloat(1.4))
+                        .position(x: x, y: -20 + dropProgress * fallDistance)
+                        .opacity(dropProgress < 0.95 ? 1 : max(0, (1 - dropProgress) * CGFloat(20)))
+                        .animation(.easeIn(duration: 2.2).delay(delay), value: dropProgress)
+                }
+            }
+            .onAppear {
+                dropProgress = 1
+            }
+        }
+        .ignoresSafeArea()
+    }
+}
+
+// MARK: - Study Session (Leitner: correct → +1 level, wrong → level 1)
+private struct StudySessionView: View {
+    var box: VocabularyBox
+    var selectedLevelIDs: Set<Int>
     var onFinish: () -> Void
 
+    @Environment(\.modelContext) private var modelContext
+    @AppStorage("studyDirection") private var studyDirection: String = "EN_DE"
     @AppStorage("wordsPerSession") private var wordsPerSession: Int = 10
     @AppStorage("hapticFeedbackEnabled") private var hapticFeedbackEnabled: Bool = true
 
-    @State private var sessionWords: [WordPair] = []
+    private var isPrimaryFirst: Bool { studyDirection == "\(box.primaryLanguageCode.prefix(2).uppercased())_\(box.targetLanguageCode.prefix(2).uppercased())" }
+    private var sourceLanguageLabel: String { isPrimaryFirst ? BoxLanguage.displayName(for: box.primaryLanguageCode) : BoxLanguage.displayName(for: box.targetLanguageCode) }
+    private var translationLanguageLabel: String { isPrimaryFirst ? BoxLanguage.displayName(for: box.targetLanguageCode) : BoxLanguage.displayName(for: box.primaryLanguageCode) }
+
+    /// (word, questionText, answerText) for the card; Leitner updates word.level on answer.
+    @State private var sessionEntries: [(word: BoxWord, question: String, answer: String)] = []
     @State private var currentIndex: Int = 0
     @State private var isRevealed: Bool = false
     @State private var correctCount: Int = 0
@@ -954,7 +1485,7 @@ private struct StudySessionView: View {
     private static let wrongButtonColor = Color(.systemRed).opacity(0.18)
     private static let wrongIconColor = Color(.systemRed)
 
-    private var totalWords: Int { sessionWords.count }
+    private var totalWords: Int { sessionEntries.count }
     private var completedCount: Int { correctCount + incorrectCount }
     private var progress: Double {
         guard totalWords > 0 else { return 0 }
@@ -980,90 +1511,89 @@ private struct StudySessionView: View {
                             .fill(Color.primary.opacity(0.1))
                         RoundedRectangle(cornerRadius: Self.progressBarHeight / 2, style: .continuous)
                             .fill(ModalStyle.linguAIGreen)
-                            .frame(width: max(0, geo.size.width * progress))
+                            .frame(width: max(0, geo.size.width * CGFloat(progress)))
                             .animation(.easeInOut(duration: 0.35), value: progress)
                     }
                 }
                 .frame(height: Self.progressBarHeight)
 
-                // Header: back (left), source language pill (center)
+                // Header: source language pill only (back is in nav bar)
                 HStack {
-                    Button {
-                        showExitAlert = true
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(.body, design: .rounded).weight(.semibold))
-                            .foregroundStyle(ModalStyle.linguAIGreen)
-                            .frame(width: 44, height: 44)
-                    }
-
                     Spacer()
-
                     Text(sourceLanguageLabel)
                         .font(.system(.caption2, design: .rounded).weight(.medium))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
                         .background(Capsule().fill(Color(.systemGray5)))
-
                     Spacer()
-
-                    Color.clear.frame(width: 44, height: 44)
                 }
                 .padding(.horizontal, 8)
                 .padding(.top, 12)
                 .padding(.bottom, 24)
 
-                // Word card (center): white card, primary word, translation + language labels when revealed
-                if !sessionWords.isEmpty, currentIndex < sessionWords.count {
-                    let pair = sessionWords[currentIndex]
-                    VStack(spacing: 16) {
-                        VStack(spacing: 6) {
-                            if isRevealed {
-                                Text(sourceLanguageLabel)
-                                    .font(.system(.caption2, design: .rounded))
-                                    .foregroundStyle(Color(.systemGray))
-                            }
-                            Text(pair.native)
+                // Word card (center): question + answer; Leitner level updated on answer
+                if !sessionEntries.isEmpty, currentIndex < sessionEntries.count {
+                    let entry = sessionEntries[currentIndex]
+                    let questionText = entry.question
+                    let answerText = entry.answer
+                    VStack(spacing: 20) {
+                        VStack(spacing: 16) {
+                            Text(questionText)
                                 .font(.system(size: 34, weight: .bold, design: .rounded))
                                 .foregroundStyle(.primary)
                                 .multilineTextAlignment(.center)
-                        }
 
-                        if isRevealed {
-                            VStack(spacing: 6) {
-                                Text(translationLanguageLabel)
-                                    .font(.system(.caption2, design: .rounded))
-                                    .foregroundStyle(Color(.systemGray))
-                                Text(pair.translation)
+                            if isRevealed {
+                                Text(answerText)
                                     .font(.system(size: 22, weight: .medium, design: .rounded))
                                     .foregroundStyle(.secondary)
                                     .multilineTextAlignment(.center)
+                                    .transition(.asymmetric(
+                                        insertion: .opacity.combined(with: .move(edge: .top)),
+                                        removal: .opacity
+                                    ))
                             }
-                            .transition(.asymmetric(
-                                insertion: .opacity.combined(with: .move(edge: .top)),
-                                removal: .opacity
-                            ))
+                        }
+                        .padding(32)
+                        .frame(maxWidth: .infinity)
+                        .background(
+                            RoundedRectangle(cornerRadius: Self.cardCornerRadius, style: .continuous)
+                                .fill(Color(uiColor: .secondarySystemGroupedBackground))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Self.cardCornerRadius, style: .continuous)
+                                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+                        )
+                        .shadow(
+                            color: .black.opacity(Self.cardShadowOpacity),
+                            radius: Self.cardShadowRadius,
+                            x: 0,
+                            y: 6
+                        )
+                        .padding(.horizontal, 24)
+                        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isRevealed)
+                        .id(entry.word.uuid)
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .leading).combined(with: .opacity),
+                            removal: .move(edge: .trailing).combined(with: .opacity)
+                        ))
+
+                        // Language Pill 2 (Target): below the card when translation revealed
+                        if isRevealed {
+                            Text(translationLanguageLabel)
+                                .font(.system(.caption2, design: .rounded).weight(.medium))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(Capsule().fill(Color(.systemGray5)))
+                                .transition(.asymmetric(
+                                    insertion: .opacity.combined(with: .move(edge: .top)),
+                                    removal: .opacity.combined(with: .move(edge: .top))
+                                ))
+                                .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isRevealed)
                         }
                     }
-                    .padding(32)
-                    .frame(maxWidth: .infinity)
-                    .background(
-                        RoundedRectangle(cornerRadius: Self.cardCornerRadius, style: .continuous)
-                            .fill(Color(uiColor: .secondarySystemGroupedBackground))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Self.cardCornerRadius, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
-                    )
-                    .shadow(
-                        color: .black.opacity(Self.cardShadowOpacity),
-                        radius: Self.cardShadowRadius,
-                        x: 0,
-                        y: 6
-                    )
-                    .padding(.horizontal, 24)
-                    .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isRevealed)
                 }
 
                 Spacer(minLength: 0)
@@ -1130,9 +1660,27 @@ private struct StudySessionView: View {
             }
         }
         .onAppear {
-            let count = min(wordsPerSession, wordPairs.count)
-            sessionWords = Array(wordPairs.shuffled().prefix(max(1, count)))
+            let filtered = box.words.filter { selectedLevelIDs.contains($0.level) }
+            let capped = Array(filtered.shuffled().prefix(max(1, min(wordsPerSession, filtered.count))))
+            sessionEntries = capped.map { word in
+                let q = isPrimaryFirst ? word.primaryText : word.targetText
+                let a = isPrimaryFirst ? word.targetText : word.primaryText
+                return (word: word, question: q, answer: a)
+            }
             sessionStartTime = Date()
+        }
+        .navigationBarBackButtonHidden(true)
+        .navigationBarHidden(showCompletion)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button {
+                    showExitAlert = true
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(.body, design: .rounded).weight(.semibold))
+                        .foregroundStyle(.primary)
+                }
+            }
         }
         .alert("End Session?", isPresented: $showExitAlert) {
             Button("Cancel", role: .cancel) {}
@@ -1140,7 +1688,7 @@ private struct StudySessionView: View {
                 onFinish()
             }
         } message: {
-            Text("Progress for this session will be lost.")
+            Text("Your current progress will be lost.")
         }
     }
 
@@ -1149,16 +1697,19 @@ private struct StudySessionView: View {
             Color(uiColor: .systemGroupedBackground)
                 .ignoresSafeArea()
 
+            ConfettiView()
+                .allowsHitTesting(false)
+
             VStack(spacing: 28) {
                 Text("Well Done!")
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                    .font(.system(size: 48, weight: .heavy, design: .rounded))
                     .foregroundStyle(.primary)
 
                 Text("Session Complete")
                     .font(.system(.subheadline, design: .rounded))
                     .foregroundStyle(.secondary)
 
-                Text("\(totalWords) words studied")
+                Text("\(totalWords) word\(totalWords == 1 ? "" : "s") studied")
                     .font(.system(.title3, design: .rounded).weight(.semibold))
                     .foregroundStyle(.primary)
 
@@ -1196,64 +1747,98 @@ private struct StudySessionView: View {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         }
         if correct { correctCount += 1 } else { incorrectCount += 1 }
+        if currentIndex < sessionEntries.count {
+            let word = sessionEntries[currentIndex].word
+            word.level = LeitnerEngine.level(afterCorrect: correct, currentLevel: word.level)
+            try? modelContext.save()
+        }
         if currentIndex + 1 >= totalWords {
             withAnimation(.easeOut(duration: 0.25)) {
                 showCompletion = true
             }
         } else {
-            currentIndex += 1
-            isRevealed = false
+            withAnimation(.easeInOut(duration: 0.3)) {
+                isRevealed = false
+                currentIndex += 1
+            }
         }
     }
 }
 
-extension StudySessionView {
-    /// Sample word pairs for development; replace with real data from selected boxes.
-    static let sampleWordPairs: [WordPair] = [
-        ("Hallo", "Hello"),
-        ("Danke", "Thank you"),
-        ("Bitte", "Please"),
-        ("Ja", "Yes"),
-        ("Nein", "No"),
-        ("Guten Morgen", "Good morning"),
-        ("Auf Wiedersehen", "Goodbye"),
-        ("Entschuldigung", "Excuse me"),
-        ("Wie geht es dir?", "How are you?"),
-        ("Ich heiße...", "My name is..."),
-        ("Wasser", "Water"),
-        ("Brot", "Bread"),
-        ("Buch", "Book"),
-        ("Haus", "House"),
-        ("Zeit", "Time"),
-        ("Freund", "Friend"),
-        ("Arbeit", "Work"),
-        ("Liebe", "Love"),
-        ("Tag", "Day"),
-        ("Nacht", "Night")
-    ]
-}
-
 private struct SettingsView: View {
+    /// When set, study direction options are derived from this box's primary/target languages.
+    var box: VocabularyBox? = nil
     /// When set, words per session is capped by this (e.g. total words in selected boxes). Otherwise cap at 50.
     var maxWordsAvailable: Int? = nil
 
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("studyDirection") private var studyDirection: String = "EN_DE"
     @AppStorage("wordsPerSession") private var wordsPerSession: Int = 10
     @AppStorage("hapticFeedbackEnabled") private var hapticFeedbackEnabled: Bool = true
 
+    /// Short label for study direction (e.g. "en" → "EN", "de" → "DE", "zh" → "ZH").
+    private static func shortDirectionLabel(for code: String) -> String {
+        let s = code.prefix(2).uppercased()
+        return String(s)
+    }
+
+    /// When box is set, the two study direction tags (primary→target and target→primary).
+    private var studyDirectionTags: (primaryTarget: String, targetPrimary: String)? {
+        guard let box else { return nil }
+        let p = Self.shortDirectionLabel(for: box.primaryLanguageCode)
+        let t = Self.shortDirectionLabel(for: box.targetLanguageCode)
+        return ("\(p)_\(t)", "\(t)_\(p)")
+    }
+
+    /// Minimum 5, maximum 50 or the words available in the box (whichever is lower).
     private var effectiveMaxWords: Int {
-        max(1, min(50, maxWordsAvailable ?? 50))
+        max(5, min(50, maxWordsAvailable ?? 50))
     }
 
     var body: some View {
         List {
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Study Direction")
+                        .font(.system(.body, design: .rounded))
+                    if let box, let tags = studyDirectionTags {
+                        Picker("Study Direction", selection: $studyDirection) {
+                            Text("\(Self.shortDirectionLabel(for: box.primaryLanguageCode)) → \(Self.shortDirectionLabel(for: box.targetLanguageCode))")
+                                .font(.system(.subheadline, design: .rounded))
+                                .tag(tags.primaryTarget)
+                            Text("\(Self.shortDirectionLabel(for: box.targetLanguageCode)) → \(Self.shortDirectionLabel(for: box.primaryLanguageCode))")
+                                .font(.system(.subheadline, design: .rounded))
+                                .tag(tags.targetPrimary)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .tint(ModalStyle.linguAIGreen)
+                    } else {
+                        Picker("Study Direction", selection: $studyDirection) {
+                            Text("DE → EN")
+                                .font(.system(.subheadline, design: .rounded))
+                                .tag("DE_EN")
+                            Text("EN → DE")
+                                .font(.system(.subheadline, design: .rounded))
+                                .tag("EN_DE")
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .tint(ModalStyle.linguAIGreen)
+                    }
+                }
+            } header: {
+                Text("Study")
+                    .font(.system(.subheadline, design: .rounded).weight(.semibold))
+            }
+
             Section {
                 HStack {
                     Text("Words per session")
                         .font(.system(.body, design: .rounded))
                     Spacer()
                     Picker("Words per session", selection: $wordsPerSession) {
-                        ForEach(1...effectiveMaxWords, id: \.self) { n in
+                        ForEach(5...effectiveMaxWords, id: \.self) { n in
                             Text("\(n)").tag(n)
                         }
                     }
@@ -1297,7 +1882,10 @@ private struct SettingsView: View {
             }
         }
         .onAppear {
-            wordsPerSession = min(max(1, wordsPerSession), effectiveMaxWords)
+            wordsPerSession = min(max(5, wordsPerSession), effectiveMaxWords)
+            if let tags = studyDirectionTags {
+                studyDirection = tags.primaryTarget
+            }
         }
     }
 }
@@ -1306,5 +1894,6 @@ private struct SettingsView: View {
     NavigationStack {
         VocabularyBoxesView()
     }
+    .modelContainer(for: [VocabularyBox.self, BoxWord.self], inMemory: true)
 }
 
