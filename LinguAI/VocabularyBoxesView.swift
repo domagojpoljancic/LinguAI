@@ -59,7 +59,7 @@ struct VocabularyBoxesView: View {
     ]
     @State private var currentSuggestion = "Greetings"
     @FocusState private var isNewBoxNameFocused: Bool
-    @State private var isShowingStudy = false
+    @State private var isShowingHowTo = false
     @State private var newBoxSheetDetent: PresentationDetent = .height(ModalStyle.newBoxSheetHeight)
 
     var body: some View {
@@ -97,16 +97,13 @@ struct VocabularyBoxesView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    startAddingBox()
+                    isShowingHowTo = true
                 } label: {
-                    Image(systemName: "plus")
+                    Image(systemName: "questionmark.circle")
                         .font(.body.weight(.medium))
                         .foregroundStyle(ModalStyle.linguAIGreen)
                 }
             }
-        }
-        .navigationDestination(isPresented: $isShowingStudy) {
-            StudyView()
         }
         .sheet(isPresented: $isPresentingBoxEditor) {
             newBoxSheet
@@ -116,6 +113,9 @@ struct VocabularyBoxesView: View {
         }
         .onChange(of: isPresentingBoxEditor) { _, isPresented in
             if !isPresented { newBoxSheetDetent = .height(ModalStyle.newBoxSheetHeight) }
+        }
+        .sheet(isPresented: $isShowingHowTo) {
+            howToSheet
         }
         .alert("Delete box?", isPresented: $isShowingDeleteConfirmation) {
             Button("Delete", role: .destructive) {
@@ -136,9 +136,9 @@ struct VocabularyBoxesView: View {
         VStack {
             Spacer(minLength: 0)
             Button {
-                isShowingStudy = true
+                startAddingBox()
             } label: {
-                Label("Study", systemImage: "play.fill")
+                Label("Add", systemImage: "plus")
                     .font(.system(.subheadline, design: .rounded).weight(.semibold))
                     .foregroundStyle(ModalStyle.linguAIGreen)
             }
@@ -155,6 +155,64 @@ struct VocabularyBoxesView: View {
         }
     }
 
+    private var howToSheet: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    howToStep(
+                        number: 1,
+                        title: "Create a box",
+                        body: "Tap the **Add** button at the bottom to create a new vocabulary box. Give it a name (e.g. Greetings, Travel)."
+                    )
+                    howToStep(
+                        number: 2,
+                        title: "Add words",
+                        body: "Open a box and tap the **+** button to add words. Enter the word in your target language and the translation."
+                    )
+                    howToStep(
+                        number: 3,
+                        title: "Study",
+                        body: "Use your boxes to review and practise your vocabulary. Swipe to delete or use the context menu to rename a box."
+                    )
+                }
+                .padding(ModalStyle.edgePadding)
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle("How to")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        isShowingHowTo = false
+                    }
+                    .font(.system(.body, design: .rounded).weight(.semibold))
+                    .foregroundStyle(ModalStyle.linguAIGreen)
+                }
+            }
+        }
+    }
+
+    private func howToStep(number: Int, title: String, body: String) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Text("\(number)")
+                .font(.system(.subheadline, design: .rounded).weight(.bold))
+                .foregroundStyle(.white)
+                .frame(width: 28, height: 28)
+                .background(ModalStyle.linguAIGreen, in: Circle())
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.system(.headline, design: .rounded).weight(.semibold))
+                Text(LocalizedStringKey(body))
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
     private var emptyStateCard: some View {
         VStack(spacing: 12) {
             Image(systemName: "shippingbox")
@@ -165,7 +223,7 @@ struct VocabularyBoxesView: View {
             Text("No boxes yet")
                 .font(.system(.headline, design: .rounded))
 
-            Text("Tap the plus button to create your first vocabulary box.")
+            Text("Tap the Add button below to create your first vocabulary box.")
                 .font(.system(.caption, design: .rounded))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
