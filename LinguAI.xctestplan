@@ -1,0 +1,30 @@
+{
+  "configurations" : [
+    {
+      "id" : "AC2A9252-D876-4F46-B8A7-F01FCF466108",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "performanceAntipatternCheckerEnabled" : true,
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:LinguAI.xcodeproj",
+      "identifier" : "8A0670252F5A0A7E00102870",
+      "name" : "LinguAI"
+    }
+  },
+  "testTargets" : [
+    {
+      "parallelizable" : true,
+      "target" : {
+        "containerPath" : "container:LinguAI.xcodeproj",
+        "identifier" : "8A06703E2F5A0A7E00102871",
+        "name" : "LinguAITests"
+      }
+    }
+  ],
+  "version" : 1
+}

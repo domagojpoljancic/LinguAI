@@ -25,6 +25,43 @@ private enum ModalStyle {
     static let newBoxSheetHeight: CGFloat = 340
 }
 
+// MARK: - Split-pill floating bar (reusable)
+/// Vertical divider used between segments in a split-pill FAB. Height ~40–50% of capsule content.
+private struct SplitPillDivider: View {
+    private static let height: CGFloat = 24
+    var body: some View {
+        Rectangle()
+            .fill(Color.secondary.opacity(0.3))
+            .frame(width: 1, height: Self.height)
+    }
+}
+
+/// Reusable floating action bar in a single capsule. Use for one or multiple segments; insert `SplitPillDivider()` between segments. Pill width is intrinsic (content + padding); centered at bottom.
+private struct SplitPillFloatingBar<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+    var bottomPadding: CGFloat = 20
+
+    var body: some View {
+        VStack {
+            Spacer(minLength: 0)
+            HStack {
+                Spacer(minLength: 0)
+                content()
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(.white.opacity(0.5), lineWidth: 0.5)
+                    )
+                    .shadow(color: .black.opacity(0.15), radius: ModalStyle.fabShadowRadius, x: 0, y: ModalStyle.fabShadowY)
+                Spacer(minLength: 0)
+            }
+            .padding(.bottom, bottomPadding)
+        }
+    }
+}
+
 private extension Font {
     static let linguAIRounded = Font.system(.body, design: .rounded)
 }
@@ -34,7 +71,7 @@ private enum BoxLanguage {
     /// Language codes we offer in the New Box sheet. Subset that works well with Translation + vocabulary.
     static let supportedCodes: [String] = [
         "de", "en", "es", "fr", "it", "pt", "nl", "pl", "ru", "tr", "ja", "ko",
-        "zh-Hans", "zh-Hant", "ar", "hi", "th", "vi", "id", "sv", "da", "no", "fi"
+        "zh-Hans", "zh-Hant", "ar", "hi", "th", "vi", "id", "sv", "da", "no", "fi", "hr"
     ]
 
     static func displayName(for code: String) -> String {
@@ -53,7 +90,7 @@ private enum BoxLanguage {
             "de": "DE", "en": "US", "es": "ES", "fr": "FR", "it": "IT", "pt": "PT",
             "nl": "NL", "pl": "PL", "ru": "RU", "tr": "TR", "ja": "JP", "ko": "KR",
             "zh-Hans": "CN", "zh-Hant": "TW", "ar": "SA", "hi": "IN", "th": "TH",
-            "vi": "VN", "id": "ID", "sv": "SE", "da": "DK", "no": "NO", "fi": "FI"
+            "vi": "VN", "id": "ID", "sv": "SE", "da": "DK", "no": "NO", "fi": "FI", "hr": "HR"
         ]
         return map[languageCode] ?? languageCode.prefix(2).uppercased().description
     }
@@ -66,7 +103,8 @@ private enum NewBoxTargetLanguages {
         ("Italian", "it"),
         ("Spanish", "es"),
         ("Dutch", "nl"),
-        ("French", "fr")
+        ("French", "fr"),
+        ("Croatian", "hr")
     ]
     static let noSelectionCode = ""
 }
@@ -96,6 +134,7 @@ struct VocabularyBoxesView: View {
     @State private var isShowingHowTo = false
     @State private var newBoxSheetDetent: PresentationDetent = .height(ModalStyle.newBoxSheetHeight)
     @State private var newBoxTargetLanguageCode: String = NewBoxTargetLanguages.noSelectionCode
+    @State private var isShowingAddWithAIAlert = false
 
     var body: some View {
         ZStack {
@@ -104,7 +143,7 @@ struct VocabularyBoxesView: View {
                 emptyStateCard
             } else {
                 List {
-                    ForEach(boxes) { box in
+                    ForEach(boxes, id: \.persistentModelID) { box in
                         NavigationLink {
                             VocabularyBoxDetailView(box: box)
                         } label: {
@@ -167,28 +206,45 @@ struct VocabularyBoxesView: View {
         } message: {
             Text("Are you sure you want to delete this box?")
         }
+        .onAppear {
+            #if DEBUG
+            // Safe DB check: only names (no relationship access) so it doesn’t trigger SwiftData crash on insert.
+            let names = boxes.map(\.name)
+            print("LinguAI DB: \(boxes.count) box(es) \(names.isEmpty ? "(empty)" : names.joined(separator: ", "))")
+            #endif
+        }
     }
 
     private var floatingActionBar: some View {
-        VStack {
-            Spacer(minLength: 0)
-            Button {
-                startAddingBox()
-            } label: {
-                Label("Add", systemImage: "plus")
-                    .font(.system(.subheadline, design: .rounded).weight(.semibold))
-                    .foregroundStyle(ModalStyle.linguAIGreen)
+        SplitPillFloatingBar {
+            HStack(spacing: 12) {
+                Button {
+                    startAddingBox()
+                } label: {
+                    Label("Add", systemImage: "plus")
+                        .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                        .foregroundStyle(ModalStyle.linguAIGreen)
+                        .labelStyle(.titleAndIcon)
+                }
+                .frame(minHeight: 44)
+
+                SplitPillDivider()
+
+                Button {
+                    isShowingAddWithAIAlert = true
+                } label: {
+                    Label("AI Suggest", systemImage: "sparkles")
+                        .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                        .foregroundStyle(ModalStyle.linguAIGreen)
+                        .labelStyle(.titleAndIcon)
+                }
+                .frame(minHeight: 44)
             }
-            .frame(minHeight: 44)
-            .padding(.horizontal, 28)
-            .padding(.vertical, 14)
-            .background(.ultraThinMaterial, in: Capsule())
-            .overlay(
-                Capsule()
-                    .strokeBorder(.white.opacity(0.5), lineWidth: 0.5)
-            )
-            .shadow(color: .black.opacity(0.15), radius: ModalStyle.fabShadowRadius, x: 0, y: ModalStyle.fabShadowY)
-            .padding(.bottom, 20)
+        }
+        .alert("Coming Soon", isPresented: $isShowingAddWithAIAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Generate personalized vocabulary lists with AI.")
         }
     }
 
@@ -400,7 +456,7 @@ struct VocabularyBoxesView: View {
 
     private func boxRow(for box: VocabularyBox) -> some View {
         HStack(alignment: .center, spacing: 16) {
-            progressCircle(for: box.progress)
+            progressCircle(for: box.progressValue)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(box.name)
@@ -433,11 +489,13 @@ struct VocabularyBoxesView: View {
                     style: StrokeStyle(lineWidth: 4, lineCap: .round)
                 )
                 .rotationEffect(.degrees(-90))
-            Text("\(Int(clamped * 100))%")
+                .animation(.spring(response: 0.45, dampingFraction: 0.8), value: clamped)
+            Text("\(Int(round(clamped * 100)))%")
                 .font(.caption2)
                 .foregroundColor(.secondary)
         }
         .frame(width: 34, height: 34)
+        .clipShape(Circle())
     }
 
     private func progressColor(for progress: Double) -> Color {
@@ -487,15 +545,22 @@ struct VocabularyBoxesView: View {
             editingBox.primaryLanguageCode = "en"
             editingBox.targetLanguageCode = newBoxTargetLanguageCode
         } else {
-            let box = VocabularyBox(
+            let newBox = VocabularyBox(
                 name: trimmed,
                 targetLanguageCode: newBoxTargetLanguageCode,
                 primaryLanguageCode: "en"
             )
-            modelContext.insert(box)
+            modelContext.insert(newBox)
         }
-        try? modelContext.save()
-        dismissAddBox()
+        do {
+            try modelContext.save()
+            // Defer dismiss to next run loop so SwiftData finishes and @Query updates before the list re-renders (avoids EXC_BREAKPOINT in SwiftData when adding a box).
+            DispatchQueue.main.async {
+                dismissAddBox()
+            }
+        } catch {
+            nameError = "Could not save. Please try again."
+        }
     }
 
     private func deleteBoxes(at offsets: IndexSet) {
@@ -537,7 +602,6 @@ struct VocabularyBoxDetailView: View {
     @State private var isTranslating = false
     @State private var translationConfiguration: TranslationSession.Configuration?
     @State private var textToTranslateForTask: String?
-    @State private var isShowingSettings = false
     @State private var isShowingStudy = false
     @State private var wordSheetDetent: PresentationDetent = .medium
 
@@ -546,7 +610,7 @@ struct VocabularyBoxDetailView: View {
 
     private var tableRows: [ModernDataTableRow] {
         box.words.sorted { $0.createdAt > $1.createdAt }.map {
-            ModernDataTableRow(id: $0.uuid, column1: $0.primaryText, column2: $0.targetText)
+            ModernDataTableRow(id: $0.uuid, column1: $0.targetText, column2: $0.primaryText)
         }
     }
 
@@ -555,22 +619,28 @@ struct VocabularyBoxDetailView: View {
 
     var body: some View {
         ZStack {
-            ModernDataTableView(
-                header1: primaryLanguageName,
-                header2: targetLanguageName,
-                rows: tableRows,
-                onEdit: { row in
-                    editingWord = box.words.first { $0.uuid == row.id }
-                    editGermanInput = row.column1
-                    editEnglishInput = row.column2
-                    editWordError = nil
-                    isShowingEditWord = true
-                },
-                onDelete: { row in
-                    wordToDelete = box.words.first { $0.uuid == row.id }
-                    isShowingDeleteWordConfirmation = true
+            Group {
+                if box.words.isEmpty {
+                    emptyBoxStateView
+                } else {
+                    ModernDataTableView(
+                        header1: targetLanguageName,
+                        header2: primaryLanguageName,
+                        rows: tableRows,
+                        onEdit: { row in
+                            editingWord = box.words.first { $0.uuid == row.id }
+                            editEnglishInput = row.column1
+                            editGermanInput = row.column2
+                            editWordError = nil
+                            isShowingEditWord = true
+                        },
+                        onDelete: { row in
+                            wordToDelete = box.words.first { $0.uuid == row.id }
+                            isShowingDeleteWordConfirmation = true
+                        }
+                    )
                 }
-            )
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(.systemBackground))
 
@@ -578,22 +648,6 @@ struct VocabularyBoxDetailView: View {
         }
         .navigationTitle(box.name)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    isShowingSettings = true
-                } label: {
-                    Image(systemName: "gearshape")
-                        .font(.body.weight(.medium))
-                        .foregroundStyle(ModalStyle.linguAIGreen)
-                }
-            }
-        }
-        .sheet(isPresented: $isShowingSettings) {
-            NavigationStack {
-                SettingsView(box: box, maxWordsAvailable: box.wordCount)
-            }
-        }
         .navigationDestination(isPresented: $isShowingStudy) {
             StudyView(box: box)
         }
@@ -623,18 +677,51 @@ struct VocabularyBoxDetailView: View {
         }
     }
 
+    private var emptyBoxStateView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "character.book.closed")
+                .font(.system(size: 56))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(ModalStyle.linguAIGreen)
+
+            Text("No words added yet.")
+                .font(.system(.headline, design: .rounded))
+
+            Text("Tap the + button to start building your vocabulary.")
+                .font(.system(.caption, design: .rounded))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.vertical, 40)
+        .padding(.horizontal, 24)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color(.systemBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(ModalStyle.emptyCardShadowOpacity), radius: ModalStyle.emptyCardShadowRadius, x: 0, y: 4)
+        .padding(.horizontal, 20)
+    }
+
     private var detailFloatingActionBar: some View {
-        VStack {
-            Spacer(minLength: 0)
-            HStack(spacing: 24) {
+        SplitPillFloatingBar {
+            HStack(spacing: 12) {
                 Button {
                     isShowingStudy = true
                 } label: {
                     Label("Study", systemImage: "play.fill")
                         .font(.system(.subheadline, design: .rounded).weight(.semibold))
                         .foregroundStyle(ModalStyle.linguAIGreen)
+                        .labelStyle(.titleAndIcon)
                 }
                 .frame(minHeight: 44)
+
+                SplitPillDivider()
+
                 Button {
                     addWordError = nil
                     germanInput = ""
@@ -644,18 +731,10 @@ struct VocabularyBoxDetailView: View {
                     Label("Add word", systemImage: "plus")
                         .font(.system(.subheadline, design: .rounded).weight(.semibold))
                         .foregroundStyle(ModalStyle.linguAIGreen)
+                        .labelStyle(.titleAndIcon)
                 }
                 .frame(minHeight: 44)
             }
-            .padding(.horizontal, 28)
-            .padding(.vertical, 14)
-            .background(.ultraThinMaterial, in: Capsule())
-            .overlay(
-                Capsule()
-                    .strokeBorder(.white.opacity(0.5), lineWidth: 0.5)
-            )
-            .shadow(color: .black.opacity(0.15), radius: ModalStyle.fabShadowRadius, x: 0, y: ModalStyle.fabShadowY)
-            .padding(.bottom, 20)
         }
     }
 
@@ -672,12 +751,12 @@ struct VocabularyBoxDetailView: View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    // Primary language word field
+                    // Target language word field (left)
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("\(primaryLanguageName) word")
+                        Text("\(targetLanguageName) word")
                             .font(.system(.subheadline, design: .rounded).weight(.semibold))
                             .foregroundStyle(.secondary)
-                        TextField("e.g. \(primaryLanguageName)", text: $germanInput)
+                        TextField("e.g. \(targetLanguageName)", text: $englishInput)
                             .textInputAutocapitalization(.never)
                             .textFieldStyle(.plain)
                             .font(.system(.body, design: .rounded))
@@ -693,6 +772,14 @@ struct VocabularyBoxDetailView: View {
                                     )
                             )
                             .focused($addWordFocusedField, equals: 0)
+                            .overlay(
+                                Group {
+                                    if showTranslateButton, isTranslating {
+                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                            .fill(ModalStyle.linguAIGreen.opacity(0.06))
+                                    }
+                                }
+                            )
                     }
                     .padding(.bottom, 12)
 
@@ -719,12 +806,12 @@ struct VocabularyBoxDetailView: View {
                         .frame(height: 44)
                     }
 
-                    // Target language word field (tight spacing below primary field)
+                    // Primary language word field (right)
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("\(targetLanguageName) word")
+                        Text("\(primaryLanguageName) word")
                             .font(.system(.subheadline, design: .rounded).weight(.semibold))
                             .foregroundStyle(.secondary)
-                        TextField("e.g. \(targetLanguageName)", text: $englishInput)
+                        TextField("e.g. \(primaryLanguageName)", text: $germanInput)
                             .textInputAutocapitalization(.never)
                             .textFieldStyle(.plain)
                             .font(.system(.body, design: .rounded))
@@ -740,14 +827,6 @@ struct VocabularyBoxDetailView: View {
                                     )
                             )
                             .focused($addWordFocusedField, equals: 1)
-                            .overlay(
-                                Group {
-                                    if showTranslateButton, isTranslating {
-                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                            .fill(ModalStyle.linguAIGreen.opacity(0.06))
-                                    }
-                                }
-                            )
                     }
 
                     if let addWordError {
@@ -876,8 +955,8 @@ struct VocabularyBoxDetailView: View {
                 focusedFieldIndex: $editWordFocusedField,
                 sheetDetent: $wordSheetDetent,
                 fields: [
-                    ("\(primaryLanguageName) word", "e.g. \(primaryLanguageName)", $editGermanInput),
-                    ("\(targetLanguageName) word", "e.g. \(targetLanguageName)", $editEnglishInput)
+                    ("\(targetLanguageName) word", "e.g. \(targetLanguageName)", $editEnglishInput),
+                    ("\(primaryLanguageName) word", "e.g. \(primaryLanguageName)", $editGermanInput)
                 ]
             )
         }
@@ -1049,35 +1128,29 @@ private struct StudyView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             ScrollView {
-                VStack(spacing: Self.gridSpacing) {
-                    // Row 1: Levels 1 and 2
-                    HStack(spacing: Self.gridSpacing) {
-                        progressionCard(levels[0])
-                        progressionCard(levels[1])
+                VStack(spacing: 0) {
+                    Spacer(minLength: 24)
+                    VStack(spacing: Self.gridSpacing) {
+                        // Row 1: Levels 1 and 2
+                        HStack(spacing: Self.gridSpacing) {
+                            progressionCard(levels[0])
+                            progressionCard(levels[1])
+                        }
+                        // Row 2: Levels 3 and 4
+                        HStack(spacing: Self.gridSpacing) {
+                            progressionCard(levels[2])
+                            progressionCard(levels[3])
+                        }
+                        // Row 3: Levels 5 and 6
+                        HStack(spacing: Self.gridSpacing) {
+                            progressionCard(levels[4])
+                            progressionCard(levels[5])
+                        }
                     }
-
-                    // Row 2: Levels 3 and 4
-                    HStack(spacing: Self.gridSpacing) {
-                        progressionCard(levels[2])
-                        progressionCard(levels[3])
-                    }
-
-                    // Row 3: Levels 5 and 6
-                    HStack(spacing: Self.gridSpacing) {
-                        progressionCard(levels[4])
-                        progressionCard(levels[5])
-                    }
-
-                    Button("Debug: Test Animation") {
-                        runMockAnimation()
-                    }
-                    .font(.system(.caption, design: .rounded).weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 24)
-                    .padding(.bottom, 32)
+                    .padding(Self.edgePadding)
+                    Spacer(minLength: 24)
                 }
-                .padding(Self.edgePadding)
-                .padding(.bottom, 72)
+                .frame(maxWidth: .infinity, minHeight: 500)
                 .coordinateSpace(name: "boxProgression")
                 .onPreferenceChange(BoxFramePreferenceKey.self) { boxFrames = $0 }
                 .overlay {
@@ -1112,7 +1185,11 @@ private struct StudyView: View {
                 StudySessionView(
                     box: box,
                     selectedLevelIDs: selectedLevelIDs,
-                    onFinish: { isShowingSession = false }
+                    onFinish: { isShowingSession = false },
+                    onWordMoved: { from, to, isSuccess in
+                        activeMoves.append((from: from, to: to, count: 1, isSuccess: isSuccess))
+                        isShowingAnimation = true
+                    }
                 )
             }
 
@@ -1127,44 +1204,60 @@ private struct StudyView: View {
     private var startFloatingButton: some View {
         let wordCount = totalWordsInSelectedLevels
         let isDisabled = wordCount == 0
-        return Button {
-            isShowingSession = true
-        } label: {
-            Text("Start (\(wordCount))")
-                .font(.system(.subheadline, design: .rounded).weight(.semibold))
-                .foregroundStyle(isDisabled ? .secondary : ModalStyle.linguAIGreen)
+        return SplitPillFloatingBar {
+            Button {
+                isShowingSession = true
+            } label: {
+                Text("Start (\(wordCount))")
+                    .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                    .foregroundStyle(isDisabled ? .secondary : ModalStyle.linguAIGreen)
+            }
+            .disabled(isDisabled)
+            .frame(minHeight: 44)
         }
-        .disabled(isDisabled)
-        .frame(minHeight: 44)
-        .padding(.horizontal, 28)
-        .padding(.vertical, 14)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(.white.opacity(0.5), lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.15), radius: ModalStyle.fabShadowRadius, x: 0, y: ModalStyle.fabShadowY)
-        .padding(.bottom, 20)
     }
+
+    /// Fixed height for badge + count so Mastered and numbered cards align (circle, optional label, count).
+    private static let badgeCountBlockHeight: CGFloat = 88
 
     private func progressionCard(_ level: BoxProgressionLevel) -> some View {
         let isSelected = selectedLevelIDs.contains(level.id)
         let count = level.wordCount
         let isPopping = popBoxID == level.id
+        let isMastered = level.id == LeitnerEngine.maxLevel
         return Button {
             toggleSelection(level.id)
         } label: {
-            VStack(spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(ModalStyle.linguAIGreen.opacity(Self.levelBadgeGreenOpacity))
-                    Text("\(level.levelNumber)")
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
-                        .foregroundStyle(.primary)
-                }
-                .frame(width: Self.levelBadgeSize, height: Self.levelBadgeSize)
+            VStack(spacing: 0) {
+                VStack(spacing: isMastered ? 4 : 12) {
+                    ZStack {
+                        Circle()
+                            .fill(ModalStyle.linguAIGreen.opacity(Self.levelBadgeGreenOpacity))
+                        if isMastered {
+                            Image(systemName: "trophy.fill")
+                                .font(.system(size: 28, weight: .semibold))
+                                .foregroundStyle(ModalStyle.linguAIGreen)
+                        } else {
+                            Text("\(level.levelNumber)")
+                                .font(.system(size: 28, weight: .bold, design: .rounded))
+                                .foregroundStyle(.primary)
+                        }
+                    }
+                    .frame(width: Self.levelBadgeSize, height: Self.levelBadgeSize)
 
-                Text("\(count)")
-                    .font(.system(.title3, design: .rounded).weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .scaleEffect(isPopping ? popScale : 1)
+                    if isMastered {
+                        Text("Mastered")
+                            .font(.system(.caption, design: .rounded).weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text("\(count)")
+                        .font(.system(.title3, design: .rounded).weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .scaleEffect(isPopping ? popScale : 1)
+                }
+                .frame(height: Self.badgeCountBlockHeight)
+                .frame(maxWidth: .infinity)
 
                 Spacer(minLength: 0)
 
@@ -1175,9 +1268,11 @@ private struct StudyView: View {
                         RoundedRectangle(cornerRadius: Self.progressBarHeight / 2, style: .continuous)
                             .fill(ModalStyle.linguAIGreen)
                             .frame(width: max(0, geo.size.width * CGFloat(level.progress)))
+                            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: level.progress)
                     }
                 }
                 .frame(height: Self.progressBarHeight)
+                .clipShape(RoundedRectangle(cornerRadius: Self.progressBarHeight / 2, style: .continuous))
             }
             .opacity(isSelected ? 1 : Self.unselectedContentOpacity)
             .padding(.vertical, 20)
@@ -1237,28 +1332,14 @@ private struct StudyView: View {
         }
     }
 
-    private func runMockAnimation() {
-        refreshLevelCounts()
-        popBoxID = nil
-        popScale = 1
-        isShowingAnimation = true
-        activeMoves = [
-            (from: 1, to: 2, count: 3, isSuccess: true),
-            (from: 4, to: 5, count: 2, isSuccess: true),
-            (from: 3, to: 1, count: 1, isSuccess: false)
-        ]
-    }
-
-    /// Called at burst start: update counts and subtle number bump. No card frame/color change.
+    /// Called at burst start: update counts and subtle number bump. Never let a box count go below zero.
     private func applyMoveAndPop(move: (from: Int, to: Int, count: Int, isSuccess: Bool)) {
         UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
-        if move.isSuccess {
-            levelWordCounts[move.from, default: 0] -= move.count
-            levelWordCounts[move.to, default: 0] += move.count
-        } else {
-            levelWordCounts[move.from, default: 0] -= move.count
-            levelWordCounts[move.to, default: 0] += move.count
-        }
+        let fromCount = levelWordCounts[move.from, default: 0]
+        let toCount = levelWordCounts[move.to, default: 0]
+        let deduct = min(move.count, max(0, fromCount))
+        levelWordCounts[move.from] = max(0, fromCount - deduct)
+        levelWordCounts[move.to] = toCount + deduct
         popBoxID = move.to
         withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
             popScale = 1.1
@@ -1413,43 +1494,77 @@ private struct ProgressionCardButtonStyle: ButtonStyle {
     }
 }
 
-// MARK: - Confetti (completion celebration)
-private struct ConfettiView: View {
-    private static let particleCount = 55
-    private static let colors: [Color] = [
-        ModalStyle.linguAIGreen,
-        Color(.systemRed),
-        Color(.systemOrange),
-        Color(.systemYellow),
-        Color(.systemBlue),
-        Color(.systemPurple)
-    ]
-    @State private var dropProgress: CGFloat = 0
+// MARK: - Well Done overlay (scale + opacity, no confetti)
+private struct WellDoneOverlayView: View {
+    let totalWords: Int
+    let onFinish: () -> Void
+    @State private var isVisible = false
 
     var body: some View {
-        GeometryReader { geo in
-            let width = geo.size.width
-            let height = geo.size.height
-            let fallDistance = height + 80
-            ZStack {
-                ForEach(0..<Self.particleCount, id: \.self) { i in
-                    let x = (CGFloat(i) * 31 + 19).truncatingRemainder(dividingBy: width)
-                    let color = Self.colors[i % Self.colors.count]
-                    let delay = Double(i % 7) * 0.04
-                    let size: CGFloat = [6, 7, 8, 9][i % 4]
-                    RoundedRectangle(cornerRadius: size / 3, style: .continuous)
-                        .fill(color)
-                        .frame(width: size, height: size * CGFloat(1.4))
-                        .position(x: x, y: -20 + dropProgress * fallDistance)
-                        .opacity(dropProgress < 0.95 ? 1 : max(0, (1 - dropProgress) * CGFloat(20)))
-                        .animation(.easeIn(duration: 2.2).delay(delay), value: dropProgress)
+        ZStack {
+            Color(uiColor: .systemGroupedBackground)
+                .ignoresSafeArea()
+
+            VStack(spacing: 28) {
+                Text("Well Done!")
+                    .font(.system(size: 48, weight: .heavy, design: .rounded))
+                    .foregroundStyle(.primary)
+
+                Text("Session Complete")
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundStyle(.secondary)
+
+                Text("\(totalWords) word\(totalWords == 1 ? "" : "s") studied")
+                    .font(.system(.title3, design: .rounded).weight(.semibold))
+                    .foregroundStyle(.primary)
+
+                Button(action: onFinish) {
+                    Text("Finish")
+                        .font(.system(.body, design: .rounded).weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(ModalStyle.linguAIGreen, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 24)
+                .padding(.top, 16)
             }
+            .scaleEffect(isVisible ? 1 : 0.8)
+            .opacity(isVisible ? 1 : 0)
+            .animation(.easeOut(duration: 0.6), value: isVisible)
             .onAppear {
-                dropProgress = 1
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                isVisible = true
             }
         }
-        .ignoresSafeArea()
+    }
+}
+
+// MARK: - Shake effect (Box 1 wrong answer)
+private struct ShakeModifier: ViewModifier {
+    let trigger: Bool
+    @State private var phase: Int = -1
+    private static let steps: [CGFloat] = [-8, 8, -8, 8, 0]
+
+    func body(content: Content) -> some View {
+        content
+            .offset(x: phase >= 0 && phase < Self.steps.count ? Self.steps[phase] : 0)
+            .animation(.easeInOut(duration: 0.05), value: phase)
+            .onChange(of: trigger) { _, newValue in
+                if newValue { runShake() }
+            }
+    }
+
+    private func runShake() {
+        for i in 0..<Self.steps.count {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.05) {
+                phase = i
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Double(Self.steps.count) * 0.05) {
+            phase = -1
+        }
     }
 }
 
@@ -1458,10 +1573,11 @@ private struct StudySessionView: View {
     var box: VocabularyBox
     var selectedLevelIDs: Set<Int>
     var onFinish: () -> Void
+    var onWordMoved: ((_ fromLevel: Int, _ toLevel: Int, _ isSuccess: Bool) -> Void)? = nil
 
     @Environment(\.modelContext) private var modelContext
-    @AppStorage("studyDirection") private var studyDirection: String = "EN_DE"
-    @AppStorage("wordsPerSession") private var wordsPerSession: Int = 10
+    @AppStorage("studyDirection") private var studyDirection: String = ""
+    @AppStorage("sessionWordCount") private var sessionWordCount: Int = 10
     @AppStorage("hapticFeedbackEnabled") private var hapticFeedbackEnabled: Bool = true
 
     private var isPrimaryFirst: Bool { studyDirection == "\(box.primaryLanguageCode.prefix(2).uppercased())_\(box.targetLanguageCode.prefix(2).uppercased())" }
@@ -1477,6 +1593,7 @@ private struct StudySessionView: View {
     @State private var sessionStartTime: Date = .now
     @State private var showCompletion: Bool = false
     @State private var showExitAlert: Bool = false
+    @State private var shouldShakeCard: Bool = false
 
     private static let progressBarHeight: CGFloat = 7
     private static let cardCornerRadius: CGFloat = 32
@@ -1512,10 +1629,11 @@ private struct StudySessionView: View {
                         RoundedRectangle(cornerRadius: Self.progressBarHeight / 2, style: .continuous)
                             .fill(ModalStyle.linguAIGreen)
                             .frame(width: max(0, geo.size.width * CGFloat(progress)))
-                            .animation(.easeInOut(duration: 0.35), value: progress)
+                            .animation(.spring(response: 0.4, dampingFraction: 0.8), value: progress)
                     }
                 }
                 .frame(height: Self.progressBarHeight)
+                .clipShape(RoundedRectangle(cornerRadius: Self.progressBarHeight / 2, style: .continuous))
 
                 // Header: source language pill only (back is in nav bar)
                 HStack {
@@ -1572,6 +1690,7 @@ private struct StudySessionView: View {
                             y: 6
                         )
                         .padding(.horizontal, 24)
+                        .modifier(ShakeModifier(trigger: shouldShakeCard))
                         .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isRevealed)
                         .id(entry.word.uuid)
                         .transition(.asymmetric(
@@ -1631,25 +1750,21 @@ private struct StudySessionView: View {
                     ))
                     .animation(.spring(response: 0.4, dampingFraction: 0.75), value: isRevealed)
                 } else {
-                    Button {
-                        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                            if hapticFeedbackEnabled {
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    SplitPillFloatingBar(content: {
+                        Button {
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                                if hapticFeedbackEnabled {
+                                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                }
+                                isRevealed = true
                             }
-                            isRevealed = true
+                        } label: {
+                            Text("Check")
+                                .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                                .foregroundStyle(ModalStyle.linguAIGreen)
                         }
-                    } label: {
-                        Text("Check")
-                            .font(.system(.subheadline, design: .rounded).weight(.semibold))
-                            .foregroundStyle(ModalStyle.linguAIGreen)
-                    }
-                    .frame(minHeight: 44)
-                    .padding(.horizontal, 28)
-                    .padding(.vertical, 14)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .overlay(Capsule().strokeBorder(.white.opacity(0.5), lineWidth: 0.5))
-                    .shadow(color: .black.opacity(0.15), radius: ModalStyle.fabShadowRadius, x: 0, y: ModalStyle.fabShadowY)
-                    .padding(.bottom, 32)
+                        .frame(minHeight: 44)
+                    }, bottomPadding: 32)
                 }
             }
             .opacity(showCompletion ? 0 : 1)
@@ -1660,9 +1775,17 @@ private struct StudySessionView: View {
             }
         }
         .onAppear {
+            if studyDirection.isEmpty {
+                let t = String(box.targetLanguageCode.prefix(2)).uppercased()
+                let p = String(box.primaryLanguageCode.prefix(2)).uppercased()
+                studyDirection = "\(t)_\(p)"
+            }
             let filtered = box.words.filter { selectedLevelIDs.contains($0.level) }
-            let capped = Array(filtered.shuffled().prefix(max(1, min(wordsPerSession, filtered.count))))
-            sessionEntries = capped.map { word in
+            let now = Date()
+            let requestedCount = max(1, min(sessionWordCount, filtered.count))
+            let selected = selectSessionWords(from: box.words, selectedLevelIDs: selectedLevelIDs, requestedCount: requestedCount, now: now)
+
+            sessionEntries = selected.map { word in
                 let q = isPrimaryFirst ? word.primaryText : word.targetText
                 let a = isPrimaryFirst ? word.targetText : word.primaryText
                 return (word: word, question: q, answer: a)
@@ -1693,44 +1816,10 @@ private struct StudySessionView: View {
     }
 
     private var completionOverlay: some View {
-        ZStack {
-            Color(uiColor: .systemGroupedBackground)
-                .ignoresSafeArea()
-
-            ConfettiView()
-                .allowsHitTesting(false)
-
-            VStack(spacing: 28) {
-                Text("Well Done!")
-                    .font(.system(size: 48, weight: .heavy, design: .rounded))
-                    .foregroundStyle(.primary)
-
-                Text("Session Complete")
-                    .font(.system(.subheadline, design: .rounded))
-                    .foregroundStyle(.secondary)
-
-                Text("\(totalWords) word\(totalWords == 1 ? "" : "s") studied")
-                    .font(.system(.title3, design: .rounded).weight(.semibold))
-                    .foregroundStyle(.primary)
-
-                Button {
-                    onFinish()
-                } label: {
-                    Text("Finish")
-                        .font(.system(.body, design: .rounded).weight(.semibold))
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                        .background(ModalStyle.linguAIGreen, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 24)
-                .padding(.top, 16)
-            }
-            .transition(.opacity.combined(with: .scale(scale: 0.92)))
-        }
-        .transition(.opacity.combined(with: .scale(scale: 0.96)))
-        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: showCompletion)
+        WellDoneOverlayView(
+            totalWords: totalWords,
+            onFinish: onFinish
+        )
     }
 
     private func formatDuration(_ interval: TimeInterval) -> String {
@@ -1749,15 +1838,34 @@ private struct StudySessionView: View {
         if correct { correctCount += 1 } else { incorrectCount += 1 }
         if currentIndex < sessionEntries.count {
             let word = sessionEntries[currentIndex].word
+            let fromLevel = word.level
             word.level = LeitnerEngine.level(afterCorrect: correct, currentLevel: word.level)
+            word.lastReviewedDate = Date.now
+            if correct {
+                if word.level == LeitnerEngine.maxLevel {
+                    word.nextReviewDate = .distantFuture
+                } else {
+                    word.nextReviewDate = nextReviewDate(afterCorrectAnswer: word.level, calendar: .current)
+                }
+            } else {
+                word.nextReviewDate = Date.now
+            }
             try? modelContext.save()
+            if fromLevel != word.level {
+                onWordMoved?(fromLevel, word.level, correct)
+            } else if fromLevel == 1 && !correct {
+                shouldShakeCard = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    shouldShakeCard = false
+                }
+            }
         }
         if currentIndex + 1 >= totalWords {
-            withAnimation(.easeOut(duration: 0.25)) {
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
                 showCompletion = true
             }
         } else {
-            withAnimation(.easeInOut(duration: 0.3)) {
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
                 isRevealed = false
                 currentIndex += 1
             }
@@ -1772,9 +1880,20 @@ private struct SettingsView: View {
     var maxWordsAvailable: Int? = nil
 
     @Environment(\.dismiss) private var dismiss
-    @AppStorage("studyDirection") private var studyDirection: String = "EN_DE"
-    @AppStorage("wordsPerSession") private var wordsPerSession: Int = 10
+    @AppStorage("studyDirection") private var studyDirection: String = ""
+    @AppStorage("sessionWordCount") private var sessionWordCount: Int = 10
     @AppStorage("hapticFeedbackEnabled") private var hapticFeedbackEnabled: Bool = true
+
+    /// Curated list for Words per session: 1, then multiples of 5 up to total, then total (e.g. 1, 5, 10, 15, 20, 24). No duplicates.
+    private var wordCountOptions: [Int] {
+        let total = effectiveMaxWords
+        var opts: [Int] = [1]
+        opts += stride(from: 5, through: total, by: 5)
+        if total > 1, !opts.contains(total) {
+            opts.append(total)
+        }
+        return opts
+    }
 
     /// Short label for study direction (e.g. "en" → "EN", "de" → "DE", "zh" → "ZH").
     private static func shortDirectionLabel(for code: String) -> String {
@@ -1790,9 +1909,23 @@ private struct SettingsView: View {
         return ("\(p)_\(t)", "\(t)_\(p)")
     }
 
-    /// Minimum 5, maximum 50 or the words available in the box (whichever is lower).
+    /// Minimum 1, maximum 50 or the words available (whichever is lower). Allows picker to show actual total (e.g. 3).
     private var effectiveMaxWords: Int {
-        max(5, min(50, maxWordsAvailable ?? 50))
+        max(1, min(50, maxWordsAvailable ?? 50))
+    }
+
+    /// Binding that always exposes a valid tag for the current box so the segmented Picker shows a selection from the first frame.
+    private var studyDirectionBinding: Binding<String> {
+        Binding(
+            get: {
+                guard let tags = studyDirectionTags else { return studyDirection }
+                if studyDirection == tags.primaryTarget || studyDirection == tags.targetPrimary {
+                    return studyDirection
+                }
+                return tags.targetPrimary
+            },
+            set: { studyDirection = $0 }
+        )
     }
 
     var body: some View {
@@ -1802,19 +1935,22 @@ private struct SettingsView: View {
                     Text("Study Direction")
                         .font(.system(.body, design: .rounded))
                     if let box, let tags = studyDirectionTags {
-                        Picker("Study Direction", selection: $studyDirection) {
-                            Text("\(Self.shortDirectionLabel(for: box.primaryLanguageCode)) → \(Self.shortDirectionLabel(for: box.targetLanguageCode))")
-                                .font(.system(.subheadline, design: .rounded))
-                                .tag(tags.primaryTarget)
+                        Picker("Study Direction", selection: studyDirectionBinding) {
                             Text("\(Self.shortDirectionLabel(for: box.targetLanguageCode)) → \(Self.shortDirectionLabel(for: box.primaryLanguageCode))")
                                 .font(.system(.subheadline, design: .rounded))
                                 .tag(tags.targetPrimary)
+                            Text("\(Self.shortDirectionLabel(for: box.primaryLanguageCode)) → \(Self.shortDirectionLabel(for: box.targetLanguageCode))")
+                                .font(.system(.subheadline, design: .rounded))
+                                .tag(tags.primaryTarget)
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
                         .tint(ModalStyle.linguAIGreen)
                     } else {
-                        Picker("Study Direction", selection: $studyDirection) {
+                        Picker("Study Direction", selection: Binding(
+                            get: { studyDirection == "EN_DE" || studyDirection == "DE_EN" ? studyDirection : "DE_EN" },
+                            set: { studyDirection = $0 }
+                        )) {
                             Text("DE → EN")
                                 .font(.system(.subheadline, design: .rounded))
                                 .tag("DE_EN")
@@ -1833,19 +1969,13 @@ private struct SettingsView: View {
             }
 
             Section {
-                HStack {
-                    Text("Words per session")
-                        .font(.system(.body, design: .rounded))
-                    Spacer()
-                    Picker("Words per session", selection: $wordsPerSession) {
-                        ForEach(5...effectiveMaxWords, id: \.self) { n in
-                            Text("\(n)").tag(n)
-                        }
+                Picker("Number of words", selection: $sessionWordCount) {
+                    ForEach(wordCountOptions, id: \.self) { n in
+                        Text("\(n)").tag(n)
                     }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .tint(ModalStyle.linguAIGreen)
                 }
+                .pickerStyle(.menu)
+                .tint(ModalStyle.linguAIGreen)
             } header: {
                 Text("Session")
                     .font(.system(.subheadline, design: .rounded).weight(.semibold))
@@ -1870,6 +2000,11 @@ private struct SettingsView: View {
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(Color(uiColor: .systemGroupedBackground))
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            Text("v0.1")
+                .font(.system(.caption2, design: .rounded))
+                .foregroundStyle(.secondary.opacity(0.5))
+        }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
@@ -1882,18 +2017,32 @@ private struct SettingsView: View {
             }
         }
         .onAppear {
-            wordsPerSession = min(max(5, wordsPerSession), effectiveMaxWords)
+            if !wordCountOptions.contains(sessionWordCount) {
+                let maxAvailable = wordCountOptions.last ?? 10
+                sessionWordCount = wordCountOptions.contains(10) ? 10 : maxAvailable
+            }
             if let tags = studyDirectionTags {
-                studyDirection = tags.primaryTarget
+                if studyDirection.isEmpty || (studyDirection != tags.primaryTarget && studyDirection != tags.targetPrimary) {
+                    studyDirection = tags.targetPrimary
+                }
             }
         }
     }
 }
 
-#Preview {
+#if DEBUG
+#Preview("Preview with data") {
     NavigationStack {
         VocabularyBoxesView()
+            .withSampleData()
     }
-    .modelContainer(for: [VocabularyBox.self, BoxWord.self], inMemory: true)
 }
+
+#Preview("Preview empty") {
+    NavigationStack {
+        VocabularyBoxesView()
+            .withEmptyPreviewData()
+    }
+}
+#endif
 

@@ -14,6 +14,7 @@ private enum AppRoute: Hashable {
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
+
     private let gridColumns = [
         GridItem(.flexible(), spacing: 16),
         GridItem(.flexible(), spacing: 16)
@@ -203,7 +204,9 @@ struct ContentView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
+        .withSampleData()
 }
+#endif

@@ -8,6 +8,9 @@
 import SwiftUI
 import SwiftData
 
+/// Set to `true` for one launch to clear the database, reseed "Grundlagen", and reset study direction default. Set back to `false` after.
+private let _reseedDatabaseForTesting = true
+
 @main
 struct LinguAIApp: App {
     var sharedModelContainer: ModelContainer = {
@@ -24,6 +27,18 @@ struct LinguAIApp: App {
             fatalError("Could not create ModelContainer: \(error)")
         }
     }()
+
+    init() {
+        #if DEBUG
+        if _reseedDatabaseForTesting {
+            DataSeeding.resetAndReseed(container: sharedModelContainer)
+        } else {
+            DataSeeding.runIfNeeded(container: sharedModelContainer)
+        }
+        #else
+        DataSeeding.runIfNeeded(container: sharedModelContainer)
+        #endif
+    }
 
     var body: some Scene {
         WindowGroup {
