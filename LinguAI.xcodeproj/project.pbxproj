@@ -10,6 +10,13 @@
 		8A0670362F5A0A7E00102871 /* TestingContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A0670372F5A0A7E00102871 /* TestingContainer.swift */; };
 		8A0670382F5A0A7E00102871 /* BoxPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A0670392F5A0A7E00102871 /* BoxPersistenceTests.swift */; };
 		8A06704A2F5A0B0000102871 /* LinguAISRSTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A06704B2F5A0B0000102871 /* LinguAISRSTests.swift */; };
+		8A0670502F5A0C0000102871 /* TestFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A0670512F5A0C0000102871 /* TestFixtures.swift */; };
+		8A0670522F5A0C0000102871 /* LeitnerEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A0670532F5A0C0000102871 /* LeitnerEngineTests.swift */; };
+		8A0670542F5A0C0000102871 /* SessionSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A0670552F5A0C0000102871 /* SessionSelectionTests.swift */; };
+		8A0670562F5A0C0000102871 /* BoxWordPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A0670572F5A0C0000102871 /* BoxWordPersistenceTests.swift */; };
+		8A0670582F5A0C0000102871 /* ProgressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A0670592F5A0C0000102871 /* ProgressTests.swift */; };
+		8A06705B2F5A0C0000102871 /* ValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A06705A2F5A0C0000102871 /* ValidationTests.swift */; };
+		8A06705D2F5A0C0000102871 /* DataSeedingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A06705C2F5A0C0000102871 /* DataSeedingTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -28,6 +35,13 @@
 		8A0670392F5A0A7E00102871 /* BoxPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoxPersistenceTests.swift; sourceTree = "<group>"; };
 		8A06703B2F5A0A7E00102871 /* LinguAITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LinguAITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		8A06704B2F5A0B0000102871 /* LinguAISRSTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinguAISRSTests.swift; sourceTree = "<group>"; };
+		8A0670512F5A0C0000102871 /* TestFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestFixtures.swift; sourceTree = "<group>"; };
+		8A0670532F5A0C0000102871 /* LeitnerEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LeitnerEngineTests.swift; sourceTree = "<group>"; };
+		8A0670552F5A0C0000102871 /* SessionSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSelectionTests.swift; sourceTree = "<group>"; };
+		8A0670572F5A0C0000102871 /* BoxWordPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoxWordPersistenceTests.swift; sourceTree = "<group>"; };
+		8A0670592F5A0C0000102871 /* ProgressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgressTests.swift; sourceTree = "<group>"; };
+		8A06705A2F5A0C0000102871 /* ValidationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ValidationTests.swift; sourceTree = "<group>"; };
+		8A06705C2F5A0C0000102871 /* DataSeedingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataSeedingTests.swift; sourceTree = "<group>"; };
 		8A3A18832F5D84D700748652 /* LinguAI.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = LinguAI.xctestplan; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -80,8 +94,15 @@
 			isa = PBXGroup;
 			children = (
 				8A0670372F5A0A7E00102871 /* TestingContainer.swift */,
+				8A0670512F5A0C0000102871 /* TestFixtures.swift */,
 				8A0670392F5A0A7E00102871 /* BoxPersistenceTests.swift */,
 				8A06704B2F5A0B0000102871 /* LinguAISRSTests.swift */,
+				8A0670532F5A0C0000102871 /* LeitnerEngineTests.swift */,
+				8A0670552F5A0C0000102871 /* SessionSelectionTests.swift */,
+				8A0670572F5A0C0000102871 /* BoxWordPersistenceTests.swift */,
+				8A0670592F5A0C0000102871 /* ProgressTests.swift */,
+				8A06705A2F5A0C0000102871 /* ValidationTests.swift */,
+				8A06705C2F5A0C0000102871 /* DataSeedingTests.swift */,
 			);
 			path = LinguAITests;
 			sourceTree = "<group>";
@@ -202,6 +223,13 @@
 				8A0670362F5A0A7E00102871 /* TestingContainer.swift in Sources */,
 				8A0670382F5A0A7E00102871 /* BoxPersistenceTests.swift in Sources */,
 				8A06704A2F5A0B0000102871 /* LinguAISRSTests.swift in Sources */,
+				8A0670502F5A0C0000102871 /* TestFixtures.swift in Sources */,
+				8A0670522F5A0C0000102871 /* LeitnerEngineTests.swift in Sources */,
+				8A0670542F5A0C0000102871 /* SessionSelectionTests.swift in Sources */,
+				8A0670562F5A0C0000102871 /* BoxWordPersistenceTests.swift in Sources */,
+				8A0670582F5A0C0000102871 /* ProgressTests.swift in Sources */,
+				8A06705B2F5A0C0000102871 /* ValidationTests.swift in Sources */,
+				8A06705D2F5A0C0000102871 /* DataSeedingTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -342,6 +370,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = TD4S297F8P;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -373,6 +402,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = TD4S297F8P;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

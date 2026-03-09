@@ -2,6 +2,22 @@
 
 All notable changes to LinguAI are documented here.
 
+## [Unreleased]
+
+### Added
+- **Swift Testing everywhere:** All LinguAITests use Swift Testing (`@Suite`, `@Test`, `#expect`). Suites: Box persistence, SRS logic, Leitner engine, Session selection, Box and word persistence, Progress, Validation, Data seeding. Helpers: `TestFixtures`, `TestingContainer` (no test attributes).
+- **Validation tests:** Duplicate box name (case-insensitive, editing box excluded) and duplicate word-pair validation; logic extracted to `Validation.swift` for testability.
+- **Record-answer integration tests:** Correct answer updates level and nextReviewDate; wrong answer resets to level 1 and sets nextReviewDate to now; correct at max level sets distantFuture.
+- **DataSeedingTests:** Reset-and-reseed creates single "Grundlagen" box with expected word count (in-memory).
+- **Add Word translation UX:** Single contextual "Translate to [language]" action when exactly one field has text; hint "Type in either field to translate into the other"; bidirectional translation (either field as source). Timeout 5s with user-facing messages ("Translation is unavailable right now." / "Couldn't translate this word."); loading state reset on success, timeout, and error.
+
+### Changed
+- **Add Word sheet:** Removed per-field translate buttons; plain text fields with one translate action row; translation errors clear when user types.
+- **Debug:** Removed debug print from VocabularyBoxesView onAppear.
+
+### Technical
+- **LinguAITests:** No XCTest; Swift Testing only. New files: LeitnerEngineTests, SessionSelectionTests, BoxWordPersistenceTests, ProgressTests, ValidationTests, DataSeedingTests, TestFixtures; Validation.swift in app target. TEST_PLAN.md and TROUBLESHOOTING.md added.
+
 ## [v0.1] - Basic Vocabulary box functionality
 
 ### Added

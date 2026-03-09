@@ -21,7 +21,7 @@ Built as a side project by a product manager who wanted a simple, effective voca
 ## What you can do (v0.1)
 
 - **Create vocabulary boxes** — One box per topic or language (e.g. Greetings, Travel). Name them, pick a target language (e.g. German, Italian, Croatian).
-- **Add words** — Enter target-language word + translation. Words start in Box 1 and are available to study immediately.
+- **Add words** — Enter target-language word + translation. Optional: type in one field and use **Translate to [language]** to fill the other (on-device translation, 5s timeout; clear error messages if unavailable). Words start in Box 1 and are available to study immediately.
 - **Study with cards** — Swipe or tap to reveal the answer; mark correct or incorrect. Words move up a box (or back to 1) based on your answer.
 - **Box progression view** — See six boxes (1–5 numbered, 6 = **Mastered**) with word counts and progress. Choose which boxes to include in each session.
 - **Settings** — Study direction (which language → which), words per session (capped by your selection), haptic feedback. Version label at the bottom for tracking.
@@ -61,9 +61,15 @@ So due items are prioritised, but you’re never blocked from studying more — 
 
 ## Tech and quality
 
-- **Stack:** SwiftUI, SwiftData (iOS).
-- **Testing:** Unit tests for SRS intervals, Leitner level reset, and two-pass session selection (`LinguAITests`).
+- **Stack:** SwiftUI, SwiftData, Translation framework (iOS).
+- **Testing:** All unit and integration tests use **Swift Testing** (`LinguAITests`). Coverage includes Leitner engine, SRS intervals, two-pass session selection, box/word CRUD and cascade delete, progress values, validation (duplicate box name / word pair), data seeding, and record-answer flow. Helpers: `TestingContainer` (in-memory SwiftData), `TestFixtures`. See `LinguAITests/TEST_PLAN.md` and `LinguAITests/TROUBLESHOOTING.md` for details.
 - **Version:** v0.1 (Build 1) — internal release.
+
+### High-level architecture
+
+- **Models:** `VocabularyBox`, `BoxWord` (SwiftData); Leitner and SRS logic in `VocabularyModels.swift`. Pure validation in `Validation.swift`.
+- **UI:** `ContentView` → category grid; `VocabularyBoxesView` → box list and detail; study flow and Add/Edit word sheets in the same file. Settings and study direction stored in `UserDefaults` / `@AppStorage`.
+- **Data:** One-time seed via `DataSeeding` (e.g. "Grundlagen" for empty DB); in-memory container only in tests.
 
 ---
 
@@ -72,6 +78,11 @@ So due items are prioritised, but you’re never blocked from studying more — 
 1. Clone the repo and open `LinguAI.xcodeproj` in Xcode.
 2. Build and run on a simulator or device (iOS 26+).
 3. Create a box, add words, and start studying.
+
+### Running tests
+
+- In Xcode: **Product → Test** (⌘U), or use the Test navigator (⌘6) to run individual suites.
+- All tests use in-memory persistence; no production database is touched.
 
 ---
 

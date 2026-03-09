@@ -92,4 +92,65 @@ struct LinguAISRSTests {
         #expect(selectedIDs.contains(due1.uuid))
         #expect(selectedIDs.contains(due2.uuid))
     }
+
+    // MARK: - Record-answer integration (same logic as StudyView.recordAnswer)
+
+    @Test("Recording correct answer updates level and nextReviewDate")
+    func recordCorrectAnswerUpdatesLevelAndNextReviewDate() throws {
+        let container = try TestingContainer.make()
+        let context = container.mainContext
+        let box = try TestFixtures.makeBox(in: context, wordPairs: [("a", "b")])
+        let word = box.words.first!
+        let cal = Calendar.current
+
+        word.level = LeitnerEngine.level(afterCorrect: true, currentLevel: word.level)
+        word.lastReviewedDate = Date()
+        word.nextReviewDate = word.level == LeitnerEngine.maxLevel
+            ? .distantFuture
+            : nextReviewDate(afterCorrectAnswer: word.level, calendar: cal)
+        try context.save()
+
+        #expect(word.level == 2)
+        #expect(word.nextReviewDate != nil)
+        #expect(word.nextReviewDate != .distantFuture)
+        let startOfTomorrow = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: Date()))!
+        #expect(cal.isDate(word.nextReviewDate!, inSameDayAs: startOfTomorrow))
+    }
+
+    @Test("Recording wrong answer resets level to 1 and sets nextReviewDate to now")
+    func recordWrongAnswerResetsLevelAndSetsNextReviewToNow() throws {
+        let container = try TestingContainer.make()
+        let context = container.mainContext
+        let box = try TestFixtures.makeBox(in: context, wordPairs: [])
+        _ = try TestFixtures.addWord(to: box, primaryText: "a", targetText: "b", level: 3, in: context)
+        let word = box.words.first!
+
+        word.level = LeitnerEngine.level(afterCorrect: false, currentLevel: word.level)
+        word.lastReviewedDate = Date()
+        word.nextReviewDate = Date()
+        try context.save()
+
+        #expect(word.level == 1)
+        #expect(word.nextReviewDate != nil)
+    }
+
+    @Test("Recording correct at max level sets nextReviewDate to distantFuture")
+    func recordCorrectAtMaxLevelSetsDistantFuture() throws {
+        let container = try TestingContainer.make()
+        let context = container.mainContext
+        let box = try TestFixtures.makeBox(in: context, wordPairs: [])
+        _ = try TestFixtures.addWord(to: box, primaryText: "a", targetText: "b", level: 5, in: context)
+        let word = box.words.first!
+        let cal = Calendar.current
+
+        word.level = LeitnerEngine.level(afterCorrect: true, currentLevel: word.level)
+        word.lastReviewedDate = Date()
+        word.nextReviewDate = word.level == LeitnerEngine.maxLevel
+            ? .distantFuture
+            : nextReviewDate(afterCorrectAnswer: word.level, calendar: cal)
+        try context.save()
+
+        #expect(word.level == 6)
+        #expect(word.nextReviewDate == .distantFuture)
+    }
 }

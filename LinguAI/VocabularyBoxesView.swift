@@ -25,6 +25,13 @@ private enum ModalStyle {
     static let newBoxSheetHeight: CGFloat = 340
 }
 
+// MARK: - Add Word sheet translation (timeout & user-facing messages)
+private enum AddWordSheet {
+    static let translationUnavailableMessage = "Translation is unavailable right now."
+    static let translationFailedMessage = "Couldn't translate this word."
+    struct TranslationTimeout: Error {}
+}
+
 // MARK: - Split-pill floating bar (reusable)
 /// Vertical divider used between segments in a split-pill FAB. Height ~40–50% of capsule content.
 private struct SplitPillDivider: View {
@@ -206,13 +213,7 @@ struct VocabularyBoxesView: View {
         } message: {
             Text("Are you sure you want to delete this box?")
         }
-        .onAppear {
-            #if DEBUG
-            // Safe DB check: only names (no relationship access) so it doesn’t trigger SwiftData crash on insert.
-            let names = boxes.map(\.name)
-            print("LinguAI DB: \(boxes.count) box(es) \(names.isEmpty ? "(empty)" : names.joined(separator: ", "))")
-            #endif
-        }
+        .onAppear { }
     }
 
     private var floatingActionBar: some View {
@@ -531,11 +532,7 @@ struct VocabularyBoxesView: View {
             return
         }
 
-        let isDuplicate = boxes.contains { existing in
-            existing.name.caseInsensitiveCompare(trimmed) == .orderedSame &&
-            existing !== editingBox
-        }
-        guard !isDuplicate else {
+        guard !Validation.isDuplicateBoxName(trimmed, existingBoxes: boxes, editingBox: editingBox) else {
             nameError = "A box with this name already exists."
             return
         }
@@ -601,7 +598,8 @@ struct VocabularyBoxDetailView: View {
     @FocusState private var editWordFocusedField: Int?
     @State private var isTranslating = false
     @State private var translationConfiguration: TranslationSession.Configuration?
-    @State private var textToTranslateForTask: String?
+    /// When set, runTranslation will translate this text and fill the target field. fillTargetField: true = result → englishInput, false = result → germanInput.
+    @State private var translationIntent: (text: String, fillTargetField: Bool)?
     @State private var isShowingStudy = false
     @State private var wordSheetDetent: PresentationDetent = .medium
 
@@ -613,9 +611,6 @@ struct VocabularyBoxDetailView: View {
             ModernDataTableRow(id: $0.uuid, column1: $0.targetText, column2: $0.primaryText)
         }
     }
-
-    /// Set to true to show the Smart Translate button between source and target fields in Add word sheet.
-    private let showTranslateButton = false
 
     var body: some View {
         ZStack {
@@ -659,7 +654,10 @@ struct VocabularyBoxDetailView: View {
             editWordSheet
                 .presentationCornerRadius(ModalStyle.cornerRadius)
         }
-        .onChange(of: isShowingAddWord) { _, show in if show { wordSheetDetent = .medium } }
+        .onChange(of: isShowingAddWord) { _, show in
+            if show { wordSheetDetent = .medium }
+            else { isTranslating = false; translationIntent = nil }
+        }
         .onChange(of: isShowingEditWord) { _, show in if show { wordSheetDetent = .medium } }
         .alert("Delete word?", isPresented: $isShowingDeleteWordConfirmation) {
             Button("Delete", role: .destructive) {
@@ -726,6 +724,8 @@ struct VocabularyBoxDetailView: View {
                     addWordError = nil
                     germanInput = ""
                     englishInput = ""
+                    isTranslating = false
+                    translationIntent = nil
                     isShowingAddWord = true
                 } label: {
                     Label("Add word", systemImage: "plus")
@@ -751,93 +751,76 @@ struct VocabularyBoxDetailView: View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    // Target language word field (left)
+                    Text("Type in either field to translate into the other.")
+                        .font(.system(.caption, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .padding(.bottom, 14)
+
+                    // Target language word field (e.g. German word)
                     VStack(alignment: .leading, spacing: 8) {
                         Text("\(targetLanguageName) word")
                             .font(.system(.subheadline, design: .rounded).weight(.semibold))
                             .foregroundStyle(.secondary)
-                        TextField("e.g. \(targetLanguageName)", text: $englishInput)
-                            .textInputAutocapitalization(.never)
-                            .textFieldStyle(.plain)
-                            .font(.system(.body, design: .rounded))
-                            .padding(12)
-                            .background(Color(.systemBackground))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .strokeBorder(
-                                        addWordFocusedField == 0
-                                            ? ModalStyle.linguAIGreen
-                                            : Color.primary.opacity(0.15),
-                                        lineWidth: 1
-                                    )
-                            )
-                            .focused($addWordFocusedField, equals: 0)
-                            .overlay(
-                                Group {
-                                    if showTranslateButton, isTranslating {
-                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                            .fill(ModalStyle.linguAIGreen.opacity(0.06))
-                                    }
-                                }
-                            )
+                        addWordTextField(
+                            text: $englishInput,
+                            placeholder: "e.g. \(targetLanguageName)",
+                            isFocused: addWordFocusedField == 0
+                        )
+                        .focused($addWordFocusedField, equals: 0)
                     }
                     .padding(.bottom, 12)
 
-                    if showTranslateButton {
-                        // Translate icon between fields
-                        HStack {
-                            Spacer(minLength: 0)
-                            if isTranslating {
-                                ProgressView()
-                                    .scaleEffect(0.9)
-                                    .tint(ModalStyle.linguAIGreen)
-                            } else {
-                                Button {
-                                    triggerTranslation()
-                                } label: {
-                                    Image(systemName: "character.bubble")
-                                        .font(.system(.title2, design: .rounded).weight(.medium))
-                                }
-                                .foregroundStyle(canTranslate ? ModalStyle.linguAIGreen : Color.primary.opacity(0.25))
-                                .disabled(!canTranslate)
-                            }
-                            Spacer(minLength: 0)
-                        }
-                        .frame(height: 44)
-                    }
-
-                    // Primary language word field (right)
+                    // Primary language word field (e.g. English word)
                     VStack(alignment: .leading, spacing: 8) {
                         Text("\(primaryLanguageName) word")
                             .font(.system(.subheadline, design: .rounded).weight(.semibold))
                             .foregroundStyle(.secondary)
-                        TextField("e.g. \(primaryLanguageName)", text: $germanInput)
-                            .textInputAutocapitalization(.never)
-                            .textFieldStyle(.plain)
-                            .font(.system(.body, design: .rounded))
-                            .padding(12)
-                            .background(Color(.systemBackground))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .strokeBorder(
-                                        addWordFocusedField == 1
-                                            ? ModalStyle.linguAIGreen
-                                            : Color.primary.opacity(0.15),
-                                        lineWidth: 1
-                                    )
-                            )
-                            .focused($addWordFocusedField, equals: 1)
+                        addWordTextField(
+                            text: $germanInput,
+                            placeholder: "e.g. \(primaryLanguageName)",
+                            isFocused: addWordFocusedField == 1
+                        )
+                        .focused($addWordFocusedField, equals: 1)
+                    }
+
+                    // Single contextual translate action: only when exactly one field has text
+                    if let translateLabel = addWordTranslateActionLabel {
+                        HStack(spacing: 10) {
+                            if isTranslating {
+                                ProgressView()
+                                    .scaleEffect(0.9)
+                                    .tint(ModalStyle.linguAIGreen)
+                                Text("Translating…")
+                                    .font(.system(.subheadline, design: .rounded))
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Button {
+                                    triggerTranslation()
+                                } label: {
+                                    Label(translateLabel, systemImage: "globe")
+                                        .font(.system(.subheadline, design: .rounded).weight(.medium))
+                                }
+                                .foregroundStyle(ModalStyle.linguAIGreen)
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .padding(.top, 4)
                     }
 
                     if let addWordError {
                         Text(addWordError)
                             .font(.system(.caption, design: .rounded))
                             .foregroundColor(.red)
+                            .padding(.top, 8)
                     }
                 }
                 .padding(ModalStyle.edgePadding)
             }
             .scrollDismissesKeyboard(.interactively)
+            .onChange(of: englishInput) { _, _ in clearTranslationErrorIfNeeded() }
+            .onChange(of: germanInput) { _, _ in clearTranslationErrorIfNeeded() }
 
             // Add button pinned to bottom of sheet
             Button(action: addWord) {
@@ -879,39 +862,117 @@ struct VocabularyBoxDetailView: View {
         .presentationDragIndicator(.visible)
     }
 
-    private var canTranslate: Bool {
-        !germanInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    /// Plain text field for Add Word sheet (no translate button inside).
+    private func addWordTextField(
+        text: Binding<String>,
+        placeholder: String,
+        isFocused: Bool
+    ) -> some View {
+        TextField(placeholder, text: text)
+            .textInputAutocapitalization(.never)
+            .textFieldStyle(.plain)
+            .font(.system(.body, design: .rounded))
+            .padding(12)
+            .background(Color(.systemBackground))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(
+                        isFocused ? ModalStyle.linguAIGreen : Color.primary.opacity(0.15),
+                        lineWidth: 1
+                    )
+            )
+    }
+
+    /// Label for the single translate action, or nil when translate should be hidden (both empty or both filled).
+    private var addWordTranslateActionLabel: String? {
+        let targetTrimmed = englishInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let primaryTrimmed = germanInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let onlyTarget = !targetTrimmed.isEmpty && primaryTrimmed.isEmpty
+        let onlyPrimary = targetTrimmed.isEmpty && !primaryTrimmed.isEmpty
+        if onlyTarget {
+            return "Translate to \(primaryLanguageName)"
+        }
+        if onlyPrimary {
+            return "Translate to \(targetLanguageName)"
+        }
+        return nil
+    }
+
+    private func clearTranslationErrorIfNeeded() {
+        guard let msg = addWordError else { return }
+        if msg == AddWordSheet.translationUnavailableMessage
+            || msg == AddWordSheet.translationFailedMessage
+        {
+            addWordError = nil
+        }
     }
 
     private func triggerTranslation() {
-        guard canTranslate else { return }
+        let targetTrimmed = englishInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let primaryTrimmed = germanInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let onlyTarget = !targetTrimmed.isEmpty && primaryTrimmed.isEmpty
+        let onlyPrimary = targetTrimmed.isEmpty && !primaryTrimmed.isEmpty
         addWordError = nil
-        let text = germanInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        textToTranslateForTask = text
-        isTranslating = true
+        if onlyTarget {
+            translationIntent = (targetTrimmed, false)
+            translationConfiguration = .init(
+                source: Locale.Language(identifier: box.targetLanguageCode),
+                target: Locale.Language(identifier: box.primaryLanguageCode)
+            )
+        } else if onlyPrimary {
+            translationIntent = (primaryTrimmed, true)
+            translationConfiguration = .init(
+                source: Locale.Language(identifier: box.primaryLanguageCode),
+                target: Locale.Language(identifier: box.targetLanguageCode)
+            )
+        } else {
+            return
+        }
         if translationConfiguration != nil {
             translationConfiguration?.invalidate()
         }
-        let source = Locale.Language(identifier: box.primaryLanguageCode)
-        let target = Locale.Language(identifier: box.targetLanguageCode)
-        translationConfiguration = .init(source: source, target: target)
+        isTranslating = true
     }
 
     private func runTranslation(using session: TranslationSession) async {
-        guard let text = textToTranslateForTask else { return }
+        guard let intent = translationIntent else { return }
+        let text = intent.text
+        let fillTargetField = intent.fillTargetField
+        let timeoutSeconds: UInt64 = 5
+
         do {
-            let response = try await session.translate(text)
+            let result = try await withThrowingTaskGroup(of: String.self) { group in
+                group.addTask {
+                    let response = try await session.translate(text)
+                    return response.targetText
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
+                    throw AddWordSheet.TranslationTimeout()
+                }
+                let first = try await group.next()!
+                group.cancelAll()
+                return first
+            }
             await MainActor.run {
-                englishInput = response.targetText
+                if fillTargetField {
+                    englishInput = result
+                } else {
+                    germanInput = result
+                }
+            }
+        } catch is AddWordSheet.TranslationTimeout {
+            await MainActor.run {
+                addWordError = AddWordSheet.translationUnavailableMessage
             }
         } catch {
             await MainActor.run {
-                addWordError = "Translation failed. Check language models in Settings."
+                addWordError = AddWordSheet.translationFailedMessage
             }
         }
         await MainActor.run {
             isTranslating = false
-            textToTranslateForTask = nil
+            translationIntent = nil
         }
     }
 
@@ -924,11 +985,7 @@ struct VocabularyBoxDetailView: View {
             return
         }
 
-        let isDuplicate = box.words.contains {
-            $0.primaryText.caseInsensitiveCompare(primary) == .orderedSame &&
-            $0.targetText.caseInsensitiveCompare(target) == .orderedSame
-        }
-        guard !isDuplicate else {
+        guard !Validation.isDuplicateWordPair(primary: primary, target: target, words: box.words) else {
             addWordError = "This word pair already exists in the box."
             return
         }
@@ -1776,9 +1833,9 @@ private struct StudySessionView: View {
         }
         .onAppear {
             if studyDirection.isEmpty {
-                let t = String(box.targetLanguageCode.prefix(2)).uppercased()
                 let p = String(box.primaryLanguageCode.prefix(2)).uppercased()
-                studyDirection = "\(t)_\(p)"
+                let t = String(box.targetLanguageCode.prefix(2)).uppercased()
+                studyDirection = "\(p)_\(t)"
             }
             let filtered = box.words.filter { selectedLevelIDs.contains($0.level) }
             let now = Date()
@@ -1922,7 +1979,7 @@ private struct SettingsView: View {
                 if studyDirection == tags.primaryTarget || studyDirection == tags.targetPrimary {
                     return studyDirection
                 }
-                return tags.targetPrimary
+                return tags.primaryTarget
             },
             set: { studyDirection = $0 }
         )
@@ -1936,27 +1993,27 @@ private struct SettingsView: View {
                         .font(.system(.body, design: .rounded))
                     if let box, let tags = studyDirectionTags {
                         Picker("Study Direction", selection: studyDirectionBinding) {
-                            Text("\(Self.shortDirectionLabel(for: box.targetLanguageCode)) → \(Self.shortDirectionLabel(for: box.primaryLanguageCode))")
-                                .font(.system(.subheadline, design: .rounded))
-                                .tag(tags.targetPrimary)
                             Text("\(Self.shortDirectionLabel(for: box.primaryLanguageCode)) → \(Self.shortDirectionLabel(for: box.targetLanguageCode))")
                                 .font(.system(.subheadline, design: .rounded))
                                 .tag(tags.primaryTarget)
+                            Text("\(Self.shortDirectionLabel(for: box.targetLanguageCode)) → \(Self.shortDirectionLabel(for: box.primaryLanguageCode))")
+                                .font(.system(.subheadline, design: .rounded))
+                                .tag(tags.targetPrimary)
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
                         .tint(ModalStyle.linguAIGreen)
                     } else {
                         Picker("Study Direction", selection: Binding(
-                            get: { studyDirection == "EN_DE" || studyDirection == "DE_EN" ? studyDirection : "DE_EN" },
+                            get: { studyDirection == "EN_DE" || studyDirection == "DE_EN" ? studyDirection : "EN_DE" },
                             set: { studyDirection = $0 }
                         )) {
-                            Text("DE → EN")
-                                .font(.system(.subheadline, design: .rounded))
-                                .tag("DE_EN")
                             Text("EN → DE")
                                 .font(.system(.subheadline, design: .rounded))
                                 .tag("EN_DE")
+                            Text("DE → EN")
+                                .font(.system(.subheadline, design: .rounded))
+                                .tag("DE_EN")
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
@@ -2023,7 +2080,7 @@ private struct SettingsView: View {
             }
             if let tags = studyDirectionTags {
                 if studyDirection.isEmpty || (studyDirection != tags.primaryTarget && studyDirection != tags.targetPrimary) {
-                    studyDirection = tags.targetPrimary
+                    studyDirection = tags.primaryTarget
                 }
             }
         }
