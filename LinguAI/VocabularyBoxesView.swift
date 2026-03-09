@@ -139,6 +139,10 @@ struct VocabularyBoxesView: View {
     @State private var currentSuggestion = "Greetings"
     @FocusState private var isNewBoxNameFocused: Bool
     @State private var isShowingHowTo = false
+    #if DEBUG
+    @State private var howToSeedMessage: String? = nil
+    @State private var showHowToSeedAlert = false
+    #endif
     @State private var newBoxSheetDetent: PresentationDetent = .height(ModalStyle.newBoxSheetHeight)
     @State private var newBoxTargetLanguageCode: String = NewBoxTargetLanguages.noSelectionCode
     @State private var isShowingAddWithAIAlert = false
@@ -268,6 +272,10 @@ struct VocabularyBoxesView: View {
                         title: "Study",
                         body: "Use your boxes to review and practise your vocabulary. Swipe to delete or use the context menu to rename a box."
                     )
+
+                    #if DEBUG
+                    developerToolsSection
+                    #endif
                 }
                 .padding(ModalStyle.edgePadding)
             }
@@ -283,8 +291,66 @@ struct VocabularyBoxesView: View {
                     .foregroundStyle(ModalStyle.linguAIGreen)
                 }
             }
+            #if DEBUG
+            .alert("Demo Data", isPresented: $showHowToSeedAlert) {
+                Button("OK", role: .cancel) { howToSeedMessage = nil }
+            } message: {
+                if let howToSeedMessage {
+                    Text(howToSeedMessage)
+                }
+            }
+            #endif
         }
     }
+
+    #if DEBUG
+    private var developerToolsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Developer Tools")
+                .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                .foregroundStyle(.secondary)
+            VStack(spacing: 10) {
+                Button {
+                    guard let container = DebugAppContainer.container else {
+                        howToSeedMessage = "Not available"
+                        showHowToSeedAlert = true
+                        return
+                    }
+                    let seeded = DataSeeding.seedDemoDataIfPossible(container: container)
+                    howToSeedMessage = seeded
+                        ? "Done. Grundlagen demo box created. Dismiss and open the list to see it."
+                        : "Database already has content. Use \"Reset and Seed Demo Data\" to replace with demo content."
+                    showHowToSeedAlert = true
+                } label: {
+                    Label("Seed Demo Data", systemImage: "leaf.circle")
+                        .font(.system(.body, design: .rounded))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .foregroundStyle(ModalStyle.linguAIGreen)
+                }
+                .buttonStyle(.bordered)
+                Button {
+                    guard let container = DebugAppContainer.container else {
+                        howToSeedMessage = "Not available"
+                        showHowToSeedAlert = true
+                        return
+                    }
+                    let ok = DataSeeding.resetAndReseedIfPossible(container: container)
+                    howToSeedMessage = ok
+                        ? "Done. All data cleared and Grundlagen seeded. Dismiss to see changes."
+                        : "Failed"
+                    showHowToSeedAlert = true
+                } label: {
+                    Label("Reset and Seed Demo Data", systemImage: "arrow.counterclockwise.circle")
+                        .font(.system(.body, design: .rounded))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .foregroundStyle(ModalStyle.linguAIGreen)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(.top, 8)
+    }
+    #endif
 
     private func howToStep(number: Int, title: String, body: String) -> some View {
         HStack(alignment: .top, spacing: 14) {
@@ -1839,6 +1905,7 @@ private struct StudySessionView: View {
             }
             let filtered = box.words.filter { selectedLevelIDs.contains($0.level) }
             let now = Date()
+            // Effective session size for this box only: preference clamped by available words; never persists back.
             let requestedCount = max(1, min(sessionWordCount, filtered.count))
             let selected = selectSessionWords(from: box.words, selectedLevelIDs: selectedLevelIDs, requestedCount: requestedCount, now: now)
 
@@ -1971,6 +2038,22 @@ private struct SettingsView: View {
         max(1, min(50, maxWordsAvailable ?? 50))
     }
 
+    /// Binding for the "Number of words" picker: displays a value that is always in wordCountOptions (so the picker is valid),
+    /// but only writes to the persisted preference when the user explicitly picks. If the stored value (e.g. 20) is above the
+    /// current box cap (e.g. 12), we display the cap (12) so the picker shows a valid option; the stored 20 is unchanged
+    /// until the user selects a new value.
+    private var sessionWordCountPickerBinding: Binding<Int> {
+        Binding(
+            get: {
+                if wordCountOptions.contains(sessionWordCount) {
+                    return sessionWordCount
+                }
+                return wordCountOptions.last ?? 10
+            },
+            set: { sessionWordCount = $0 }
+        )
+    }
+
     /// Binding that always exposes a valid tag for the current box so the segmented Picker shows a selection from the first frame.
     private var studyDirectionBinding: Binding<String> {
         Binding(
@@ -2026,7 +2109,7 @@ private struct SettingsView: View {
             }
 
             Section {
-                Picker("Number of words", selection: $sessionWordCount) {
+                Picker("Number of words", selection: sessionWordCountPickerBinding) {
                     ForEach(wordCountOptions, id: \.self) { n in
                         Text("\(n)").tag(n)
                     }
@@ -2074,10 +2157,6 @@ private struct SettingsView: View {
             }
         }
         .onAppear {
-            if !wordCountOptions.contains(sessionWordCount) {
-                let maxAvailable = wordCountOptions.last ?? 10
-                sessionWordCount = wordCountOptions.contains(10) ? 10 : maxAvailable
-            }
             if let tags = studyDirectionTags {
                 if studyDirection.isEmpty || (studyDirection != tags.primaryTarget && studyDirection != tags.targetPrimary) {
                     studyDirection = tags.primaryTarget

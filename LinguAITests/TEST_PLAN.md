@@ -46,6 +46,13 @@
   - nil nextReviewDate treated as due.
   - Empty filtered list returns empty.
 
+### Persistent store regression (file-backed, simulates relaunch)
+- **PersistentStoreRegressionTests** (suite: "Persistent store regression")
+  - Box persists across container recreation: create container at temp URL → insert box → save → new container at same URL → fetch; assert box exists.
+  - Word persists across container recreation: same pattern with box + word; assert word and relationship survive.
+  - Uses `TestingContainer.makeTemporaryStoreURL()`, `makePersistent(at:)`, `removePersistentStore(at:)`; cleans up temp directory after each test.
+  - These tests would fail if the app used in-memory-only storage, or if save() did not persist to disk, or if a second process/container could not see the data.
+
 ### Integration / persistence tests (Swift Testing, in-memory only)
 - **BoxWordPersistenceTests** (suite: "Box and word persistence")
   - Create box and fetch; add words and persist; new word has nextReviewDate set.

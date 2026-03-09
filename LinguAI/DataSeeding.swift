@@ -61,18 +61,18 @@ enum DataSeeding {
         ("The", "Der"),
     ]
 
-    /// Runs once at launch if the database is empty. Uses a background context so the UI
-    /// does not hang. Checks via FetchDescriptor to never duplicate on subsequent launches.
-    static func runIfNeeded(container: ModelContainer) {
-        DispatchQueue.global(qos: .userInitiated).async {
-            let context = ModelContext(container)
-            do {
-                let isEmpty = try isDatabaseEmpty(context: context)
-                guard isEmpty else { return }
-                try seedGrundlagen(into: context)
-            } catch {
-                assertionFailure("DataSeeding failed: \(error)")
-            }
+    /// Seeds the Grundlagen demo box only if the database is empty. Call from main thread; uses mainContext.
+    /// When spreadLevels is true, words are assigned random levels 1–6 to simulate customer progress. Used by DEBUG "Seed Demo Data" only.
+    /// Returns true if seeded, false if DB already had content (no duplicate).
+    static func seedDemoDataIfPossible(container: ModelContainer, spreadLevels: Bool = true) -> Bool {
+        let context = container.mainContext
+        do {
+            guard try isDatabaseEmpty(context: context) else { return false }
+            try seedGrundlagen(into: context, spreadLevels: spreadLevels)
+            return true
+        } catch {
+            assertionFailure("DataSeeding.seedDemoDataIfPossible failed: \(error)")
+            return false
         }
     }
 
@@ -95,6 +95,26 @@ enum DataSeeding {
         }
     }
 
+    /// Same as resetAndReseed but returns success/failure for UI feedback (e.g. DEBUG Settings).
+    static func resetAndReseedIfPossible(container: ModelContainer) -> Bool {
+        let context = container.mainContext
+        do {
+            var boxDescriptor = FetchDescriptor<VocabularyBox>()
+            boxDescriptor.sortBy = [SortDescriptor(\.createdAt)]
+            let boxes = try context.fetch(boxDescriptor)
+            for box in boxes {
+                context.delete(box)
+            }
+            try context.save()
+            try seedGrundlagen(into: context)
+            UserDefaults.standard.removeObject(forKey: "studyDirection")
+            return true
+        } catch {
+            assertionFailure("DataSeeding.resetAndReseed failed: \(error)")
+            return false
+        }
+    }
+
     /// Returns true if there are no boxes and no words (safe one-time seed condition).
     private static func isDatabaseEmpty(context: ModelContext) throws -> Bool {
         var boxDescriptor = FetchDescriptor<VocabularyBox>()
@@ -110,7 +130,8 @@ enum DataSeeding {
 
     /// Creates the default "Grundlagen" box and all word pairs, then saves.
     /// Relationship: insert box first, then each word with `word.box = box`.
-    private static func seedGrundlagen(into context: ModelContext) throws {
+    /// When spreadLevels is true, each word gets a random level 1–6 to simulate progress across boxes.
+    private static func seedGrundlagen(into context: ModelContext, spreadLevels: Bool = false) throws {
         let box = VocabularyBox(
             name: defaultBoxName,
             targetLanguageCode: targetLanguageCode,
@@ -121,10 +142,11 @@ enum DataSeeding {
 
         let now = Date()
         for (primaryText, targetText) in grundlagenWords {
+            let level = spreadLevels ? Int.random(in: LeitnerEngine.minLevel...LeitnerEngine.maxLevel) : LeitnerEngine.minLevel
             let word = BoxWord(
                 primaryText: primaryText,
                 targetText: targetText,
-                level: LeitnerEngine.minLevel,
+                level: level,
                 box: box,
                 createdAt: now
             )

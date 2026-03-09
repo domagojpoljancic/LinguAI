@@ -8,8 +8,12 @@
 import SwiftUI
 import SwiftData
 
-/// Set to `true` for one launch to clear the database, reseed "Grundlagen", and reset study direction default. Set back to `false` after.
-private let _reseedDatabaseForTesting = true
+#if DEBUG
+/// DEBUG only: holds the app's ModelContainer for "How To" sheet → Developer Tools (Seed / Reset and Seed Demo Data).
+enum DebugAppContainer {
+    static weak var container: ModelContainer?
+}
+#endif
 
 @main
 struct LinguAIApp: App {
@@ -22,22 +26,18 @@ struct LinguAIApp: App {
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
         do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            let container = try ModelContainer(for: schema, configurations: [modelConfiguration])
+            #if DEBUG
+            DebugAppContainer.container = container
+            #endif
+            return container
         } catch {
             fatalError("Could not create ModelContainer: \(error)")
         }
     }()
 
     init() {
-        #if DEBUG
-        if _reseedDatabaseForTesting {
-            DataSeeding.resetAndReseed(container: sharedModelContainer)
-        } else {
-            DataSeeding.runIfNeeded(container: sharedModelContainer)
-        }
-        #else
-        DataSeeding.runIfNeeded(container: sharedModelContainer)
-        #endif
+        // No automatic seeding: app starts with empty DB. Demo content only via DEBUG "How To" → Developer Tools.
     }
 
     var body: some Scene {
