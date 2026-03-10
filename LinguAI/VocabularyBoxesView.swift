@@ -27,7 +27,8 @@ private enum ModalStyle {
 
 // MARK: - Add Word sheet translation (timeout & user-facing messages)
 private enum AddWordSheet {
-    static let translationUnavailableMessage = "Translation is unavailable right now."
+    /// Shown when translation times out (e.g. after 3 seconds with no result).
+    static let translationUnavailableMessage = "Translation currently unavailable"
     static let translationFailedMessage = "Couldn't translate this word."
     struct TranslationTimeout: Error {}
 }
@@ -885,8 +886,15 @@ struct VocabularyBoxDetailView: View {
                 .padding(ModalStyle.edgePadding)
             }
             .scrollDismissesKeyboard(.interactively)
-            .onChange(of: englishInput) { _, _ in clearTranslationErrorIfNeeded() }
-            .onChange(of: germanInput) { _, _ in clearTranslationErrorIfNeeded() }
+            .onChange(of: englishInput) { _, newValue in
+                // If one field becomes empty, clear the other so both sides stay in sync (no feedback loop: clearing the other doesn’t refill this one).
+                if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { germanInput = "" }
+                clearTranslationErrorIfNeeded()
+            }
+            .onChange(of: germanInput) { _, newValue in
+                if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { englishInput = "" }
+                clearTranslationErrorIfNeeded()
+            }
 
             // Add button pinned to bottom of sheet
             Button(action: addWord) {
@@ -1004,7 +1012,7 @@ struct VocabularyBoxDetailView: View {
         guard let intent = translationIntent else { return }
         let text = intent.text
         let fillTargetField = intent.fillTargetField
-        let timeoutSeconds: UInt64 = 5
+        let timeoutSeconds: UInt64 = 3
 
         do {
             let result = try await withThrowingTaskGroup(of: String.self) { group in

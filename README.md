@@ -62,7 +62,7 @@ So due items are prioritised, but you’re never blocked from studying more — 
 ## Tech and quality
 
 - **Stack:** SwiftUI, SwiftData, Translation framework (iOS).
-- **Testing:** All unit and integration tests use **Swift Testing** (`LinguAITests`). Coverage includes Leitner engine, SRS intervals, two-pass session selection, box/word CRUD and cascade delete, progress values, validation (duplicate box name / word pair), data seeding, and record-answer flow. Helpers: `TestingContainer` (in-memory SwiftData), `TestFixtures`. See `LinguAITests/TEST_PLAN.md` and `LinguAITests/TROUBLESHOOTING.md` for details.
+- **Testing:** All unit and integration tests use **Swift Testing** (`LinguAITests`). Coverage includes Leitner engine, SRS intervals, two-pass session selection, box/word CRUD and cascade delete, progress values, validation (duplicate box name / word pair), data seeding, and record-answer flow. Helpers: `TestingContainer` (in-memory SwiftData), `TestFixtures`. See `LinguAITests/TEST_PLAN.md` and `LinguAITests/TROUBLESHOOTING.md` for details. **Behavioral specs:** human-readable Given/When/Then scenarios live in `Specifications/`; executable tests implementing them are in `LinguAITests/BehaviorSpecs.swift`.
 - **Version:** v0.1 (Build 1) — internal release.
 
 ### High-level architecture

@@ -18,6 +18,7 @@
 		8A06705B2F5A0C0000102871 /* ValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A06705A2F5A0C0000102871 /* ValidationTests.swift */; };
 		8A06705D2F5A0C0000102871 /* DataSeedingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A06705C2F5A0C0000102871 /* DataSeedingTests.swift */; };
 		8A06705F2F5A0C0000102871 /* PersistentStoreRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A06705E2F5A0C0000102871 /* PersistentStoreRegressionTests.swift */; };
+		8A0670612F5A0C0000102871 /* BehaviorSpecs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A0670602F5A0C0000102871 /* BehaviorSpecs.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -44,6 +45,7 @@
 		8A06705A2F5A0C0000102871 /* ValidationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ValidationTests.swift; sourceTree = "<group>"; };
 		8A06705C2F5A0C0000102871 /* DataSeedingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataSeedingTests.swift; sourceTree = "<group>"; };
 		8A06705E2F5A0C0000102871 /* PersistentStoreRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistentStoreRegressionTests.swift; sourceTree = "<group>"; };
+		8A0670602F5A0C0000102871 /* BehaviorSpecs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BehaviorSpecs.swift; sourceTree = "<group>"; };
 		8A3A18832F5D84D700748652 /* LinguAI.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = LinguAI.xctestplan; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -106,6 +108,7 @@
 				8A06705A2F5A0C0000102871 /* ValidationTests.swift */,
 				8A06705C2F5A0C0000102871 /* DataSeedingTests.swift */,
 				8A06705E2F5A0C0000102871 /* PersistentStoreRegressionTests.swift */,
+				8A0670602F5A0C0000102871 /* BehaviorSpecs.swift */,
 			);
 			path = LinguAITests;
 			sourceTree = "<group>";
@@ -234,6 +237,7 @@
 				8A06705B2F5A0C0000102871 /* ValidationTests.swift in Sources */,
 				8A06705D2F5A0C0000102871 /* DataSeedingTests.swift in Sources */,
 				8A06705F2F5A0C0000102871 /* PersistentStoreRegressionTests.swift in Sources */,
+				8A0670612F5A0C0000102871 /* BehaviorSpecs.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
