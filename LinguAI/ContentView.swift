@@ -26,10 +26,10 @@ struct ContentView: View {
         Color(.systemGreen)
     }
 
-    // Order: top row Reading (left), Vocabulary box (right); bottom row Grammar (left), Chat (right)
+    // Order: top row Reading (left), Vocabulary boxes (right); bottom row Grammar (left), Chat (right)
     private static let categories: [(title: String, subtitle: String, systemImage: String, isActive: Bool, isBlurredTeaser: Bool)] = [
         ("Reading", "Comprehension practice", "book.closed", false, false),
-        ("Vocabulary box", "Words & phrases", "shippingbox", true, false),
+        ("Vocabulary boxes", "Words & phrases", "shippingbox", true, false),
         ("Grammar", "Rules & exercises", "text.cursor", false, true),
         ("Chat", "Talk with AI tutor", "bubble.left.and.bubble.right", false, true)
     ]

@@ -1348,7 +1348,7 @@ private struct StudyView: View {
         }
     }
 
-    /// Fixed height for badge + count so Mastered and numbered cards align (circle, optional label, count).
+    /// Fixed height for badge + count so Mastered and Box 1–5 cards align.
     private static let badgeCountBlockHeight: CGFloat = 88
 
     private func progressionCard(_ level: BoxProgressionLevel) -> some View {
@@ -1360,31 +1360,36 @@ private struct StudyView: View {
             toggleSelection(level.id)
         } label: {
             VStack(spacing: 0) {
-                VStack(spacing: isMastered ? 4 : 12) {
-                    ZStack {
-                        Circle()
-                            .fill(ModalStyle.linguAIGreen.opacity(Self.levelBadgeGreenOpacity))
-                        if isMastered {
+                VStack(spacing: 12) {
+                    if isMastered {
+                        ZStack {
+                            Circle()
+                                .fill(ModalStyle.linguAIGreen.opacity(Self.levelBadgeGreenOpacity))
                             Image(systemName: "trophy.fill")
                                 .font(.system(size: 28, weight: .semibold))
                                 .foregroundStyle(ModalStyle.linguAIGreen)
-                        } else {
-                            Text("\(level.levelNumber)")
-                                .font(.system(size: 28, weight: .bold, design: .rounded))
-                                .foregroundStyle(.primary)
                         }
+                        .frame(width: Self.levelBadgeSize, height: Self.levelBadgeSize)
+                    } else {
+                        Text("Box \(level.levelNumber)")
+                            .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .frame(height: Self.levelBadgeSize)
+                            .background(
+                                Capsule()
+                                    .fill(ModalStyle.linguAIGreen.opacity(Self.levelBadgeGreenOpacity))
+                            )
                     }
-                    .frame(width: Self.levelBadgeSize, height: Self.levelBadgeSize)
 
-                    if isMastered {
-                        Text("Mastered")
-                            .font(.system(.caption, design: .rounded).weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Text("\(count)")
+                    Text(count == 1 ? "1 card" : "\(count) cards")
                         .font(.system(.title3, design: .rounded).weight(.semibold))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
                         .scaleEffect(isPopping ? popScale : 1)
                 }
                 .frame(height: Self.badgeCountBlockHeight)
