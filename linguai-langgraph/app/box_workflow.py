@@ -3,10 +3,10 @@ Box-generation workflow nodes and routing.
 
 Architecture:
 - relevance_check (LLM)
-- level_resolution (deterministic: explicit CEFR → infer from boxes → infer from words; only stop when all fail)
-- topic_identification (deterministic keyword extraction; ready for optional LLM)
+- level_resolution (explicit CEFR → infer from boxes with nested words → optional LLM)
+- topic_identification (deterministic keyword extraction)
 - box_creation_placeholder (stub)
-Conditional edges: after relevance (relevant? → level_resolution | END), after level (level? → topic_identification | END).
+Words are nested under each box so level inference can use completion and vocabulary per box.
 """
 
 import logging
@@ -110,64 +110,75 @@ def _parse_cefr_from_prompt(prompt: str) -> str | None:
 
 def _infer_level_from_boxes(existing_boxes: list) -> str | None:
     """
-    Heuristic: infer CEFR from average completion across boxes.
-    No boxes or no completion data -> return None.
+    Infer CEFR from boxes with nested words. Uses completion and vocabulary exposure:
+    - Highly completed boxes and their word counts signal stronger exposure.
+    - Total words across boxes and words in high-completion boxes refine the estimate.
+    No boxes or no usable data -> return None.
     """
     if not existing_boxes:
         return None
+    total_words = 0
+    weighted_words = 0.0  # words weighted by box completion (0-1)
     percents = []
     for b in existing_boxes:
         p = b.get("completionPercent") if isinstance(b, dict) else getattr(b, "completionPercent", None)
-        if p is not None:
-            percents.append(float(p))
+        p_val = float(p) if p is not None else 0.0
+        percents.append(p_val)
+        words_in_box = b.get("words") if isinstance(b, dict) else getattr(b, "words", None)
+        n_w = len(words_in_box) if words_in_box else 0
+        total_words += n_w
+        weighted_words += n_w * (p_val / 100.0)
     if not percents:
         return None
     avg = sum(percents) / len(percents)
-    n = len(existing_boxes)
-    if avg >= 70 and n >= 3:
+    n_boxes = len(existing_boxes)
+    # Vocabulary exposure: words in boxes with completion >= 50% (learner has "seen" these)
+    high_completion_words = sum(
+        len(b.get("words") or []) for b in existing_boxes
+        if (b.get("completionPercent") or 0) >= 50.0
+    )
+    # Heuristic: completion + box count + exposure (total and high-completion-weighted)
+    if avg >= 70 and n_boxes >= 3 and high_completion_words >= 20:
         return "B2"
-    if avg >= 50 and n >= 2:
+    if avg >= 50 and n_boxes >= 2 and (total_words >= 15 or high_completion_words >= 10):
         return "B1"
-    if avg >= 25 or n >= 1:
+    if avg >= 25 or n_boxes >= 1 or total_words >= 5:
         return "A2"
-    return "A1"
+    if total_words >= 1 or n_boxes >= 1:
+        return "A1"
+    return None
 
 
-def _infer_level_from_words_heuristic(existing_words: list) -> str | None:
+def _infer_level_from_boxes_llm(prompt: str, existing_boxes: list) -> str | None:
     """
-    Heuristic: infer level from existing word count / presence.
-    Many words -> assume higher level; few or none -> A1/A2.
-    Placeholder for LLM-based inference when LEVEL_INFERENCE_USE_LLM=true.
+    Optional LLM-based level inference from prompt + box-linked words (e.g. from high-completion boxes).
+    Used when LEVEL_INFERENCE_USE_LLM=true. Returns CEFR or None.
     """
-    if not existing_words:
+    try:
+        from app.config import LEVEL_INFERENCE_USE_LLM
+        if not LEVEL_INFERENCE_USE_LLM:
+            return None
+    except Exception:
         return None
-    n = len(existing_words)
-    if n >= 50:
-        return "B2"
-    if n >= 20:
-        return "B1"
-    if n >= 5:
-        return "A2"
-    return "A1"
-
-
-def _infer_level_from_words_llm(prompt: str, existing_words: list) -> str | None:
-    """
-    Placeholder for LLM-based level inference from prompt + existing words.
-    Call when LEVEL_INFERENCE_USE_LLM=true. Returns CEFR or None.
-    """
-    # TODO: call OpenAI with prompt + sample of existing words; ask for single CEFR level
-    from app.config import LEVEL_INFERENCE_USE_LLM
-    if not LEVEL_INFERENCE_USE_LLM:
-        return None
+    # Build word sample from boxes (prefer high-completion boxes)
+    sorted_boxes = sorted(
+        existing_boxes,
+        key=lambda b: float(b.get("completionPercent") or 0),
+        reverse=True,
+    )
+    word_samples = []
+    for b in sorted_boxes:
+        words = b.get("words") or []
+        for w in words[:15]:
+            word_samples.append(w.get("default") or w.get("target") or "")
+        if len(word_samples) >= 30:
+            break
+    words_preview = " ".join(word_samples[:30]) if word_samples else "none"
     try:
         llm = _get_llm()
-        words_preview = " ".join(
-            (w.get("default") or w.get("target") or "" for w in (existing_words or [])[:20])
-        ) if existing_words else ""
         msg = llm.invoke([
-            SystemMessage(content="From the user request and their existing vocabulary, choose one CEFR level: A1, A2, B1, B2, C1, or C2. Reply with only the level, e.g. A2."),
-            HumanMessage(content=f"User request: {prompt}\nExisting words (sample): {words_preview}"),
+            SystemMessage(content="From the user request and their existing vocabulary (words from their boxes), choose one CEFR level: A1, A2, B1, B2, C1, or C2. Reply with only the level, e.g. A2."),
+            HumanMessage(content=f"User request: {prompt}\nExisting vocabulary (sample): {words_preview}"),
         ])
         text = (msg.content or "").strip().upper()
         for lvl in CEFR_LEVELS:
@@ -180,14 +191,12 @@ def _infer_level_from_words_llm(prompt: str, existing_words: list) -> str | None
 
 def level_resolution(state: BoxWorkflowState) -> dict:
     """
-    Resolve CEFR level: explicit in prompt first, then infer from boxes, then from words.
-    Sets level_source to "explicit" or "inferred". Only sets insufficient_confidence when
-    no level could be resolved after all attempts (flow then ends at route_after_level).
+    Resolve CEFR: explicit in prompt first, then infer from boxes (completion + words per box), then optional LLM.
+    Sets level_source to "explicit" or "inferred". Words are taken from existing_boxes[].words.
     """
     request_id = state.get("request_id", "")
     prompt = state.get("prompt") or ""
     existing_boxes = state.get("existing_boxes") or []
-    existing_words = state.get("existing_words") or []
 
     level = _parse_cefr_from_prompt(prompt)
     source = "explicit" if level else ""
@@ -197,11 +206,7 @@ def level_resolution(state: BoxWorkflowState) -> dict:
         if level:
             source = "inferred"
     if not level:
-        level = _infer_level_from_words_llm(prompt, existing_words)
-        if level:
-            source = "inferred"
-    if not level:
-        level = _infer_level_from_words_heuristic(existing_words)
+        level = _infer_level_from_boxes_llm(prompt, existing_boxes)
         if level:
             source = "inferred"
 

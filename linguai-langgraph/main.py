@@ -156,8 +156,7 @@ def _build_ascii_debug_content(drawable, compiled_graph) -> str:
 
 def _build_app_flow_mermaid() -> str:
     """
-    Build Mermaid for full app flow and box workflow.
-    Level? no = only when no level after explicit + inference (boxes + words).
+    Build Mermaid for full app flow and box workflow (boxes carry nested words).
     """
     return """flowchart TB
   subgraph app[" App flow "]
@@ -221,17 +220,36 @@ def health():
     return {"status": "ok", "service": "linguai-langgraph"}
 
 
+def _request_summary(req: GenerateBoxesRequest) -> dict:
+    """Summary stats for logging (privacy-conscious)."""
+    boxes = req.existingBoxes
+    total_words = sum(len(b.words) for b in boxes)
+    completions = [b.completionPercent for b in boxes]
+    avg_completion = sum(completions) / len(completions) if completions else 0.0
+    high_completion_count = sum(1 for c in completions if c >= 50.0)
+    return {
+        "existing_box_count": len(boxes),
+        "total_word_count": total_words,
+        "avg_completion": round(avg_completion, 1),
+        "boxes_with_high_completion": high_completion_count,
+    }
+
+
 def _request_to_workflow_state(req: GenerateBoxesRequest) -> dict:
-    """Map API request to workflow state dict for graph invocation."""
+    """Map API request to workflow state dict for graph invocation. Words nested under each box."""
     return {
         "prompt": req.prompt,
         "default_language": req.defaultLanguage,
         "target_language": req.targetLanguage,
         "existing_boxes": [
-            {"boxId": b.boxId, "boxName": b.boxName, "completionPercent": b.completionPercent}
+            {
+                "boxId": b.boxId,
+                "boxName": b.boxName,
+                "completionPercent": b.completionPercent,
+                "words": [{"default": w.default, "target": w.target} for w in b.words],
+            }
             for b in req.existingBoxes
         ],
-        "existing_words": [{"default": w.default, "target": w.target} for w in req.existingWords],
         "request_id": req.requestId,
         "customer_id": req.customerId,
     }
@@ -259,16 +277,18 @@ def generate_boxes(req: GenerateBoxesRequest) -> GenerateBoxesResponse:
     Generate one box of words: relevance -> level resolution (explicit or inferred) -> topic -> box placeholder.
     Returns structured status, levelSource, topic, reachedBoxCreation, and optional userMessage.
     """
+    summary = _request_summary(req)
     logger.info(
-        "request_received requestId=%s customerId=%s prompt_length=%d defaultLanguage=%s targetLanguage=%s existing_box_count=%d existing_word_count=%d",
+        "request_received requestId=%s prompt_length=%d defaultLanguage=%s targetLanguage=%s existing_box_count=%d total_word_count=%d avg_completion=%s boxes_high_completion=%d",
         req.requestId,
-        req.customerId,
         len(req.prompt),
         req.defaultLanguage,
         req.targetLanguage,
-        len(req.existingBoxes),
-        len(req.existingWords),
-        extra={"request_id": req.requestId},
+        summary["existing_box_count"],
+        summary["total_word_count"],
+        summary["avg_completion"],
+        summary["boxes_with_high_completion"],
+        extra={"request_id": req.requestId, **summary},
     )
     if DEBUG:
         logger.debug("request_payload requestId=%s body=%s", req.requestId, req.model_dump(mode="json"))
