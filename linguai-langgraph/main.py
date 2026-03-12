@@ -11,7 +11,9 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from app.config import DEBUG
+from app.evaluation_log import log_evaluation_run
 from app.graph import create_graph
+from app.logging_config import setup_logging
 from app.schemas import (
     GenerateBoxesRequest,
     GenerateBoxesResponse,
@@ -21,12 +23,8 @@ from app.state import BoxWorkflowState
 # Load env first so optional LangSmith tracing works when set (LANGCHAIN_TRACING_V2=true, LANGCHAIN_API_KEY).
 load_dotenv()
 
-# Structured logging: readable in local dev; request_id in extras for filtering
-logging.basicConfig(
-    level=logging.DEBUG if DEBUG else logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+# Structured logging: configured centrally, readable in local dev; request_id in extras for filtering.
+setup_logging()
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="LinguAI LangGraph", version="0.1.0")
@@ -171,6 +169,67 @@ def _introspect_node_callable(runnable) -> Optional[object]:
     return fn if callable(fn) else runnable
 
 
+def _introspect_ai_usage(fn) -> dict[str, str]:
+    """
+    Best-effort AI usage introspection for a node.
+    Focuses on whether _get_llm()/ChatOpenAI is used, and how often in normal paths.
+    """
+    info = {
+        "ai_calls": "0",
+        "model": "none",
+        "mode": "deterministic",
+    }
+    if fn is None:
+        info["mode"] = "unknown (no callable)"
+        return info
+    try:
+        src = inspect.getsource(fn)
+    except OSError:
+        src = ""
+    uses_llm = "_get_llm(" in src or "ChatOpenAI(" in src
+    if not uses_llm:
+        return info
+
+    # Derive model description from shared _get_llm helper if available.
+    model_desc = "configured OpenAI model"
+    try:
+        from app import box_workflow as _bw  # type: ignore
+
+        if hasattr(_bw, "_get_llm"):
+            llm_src = inspect.getsource(_bw._get_llm)
+            marker = 'OPENAI_MODEL", "'
+            idx = llm_src.find(marker)
+            default_model = None
+            if idx != -1:
+                start = idx + len(marker)
+                end = llm_src.find('"', start)
+                if end != -1:
+                    default_model = llm_src[start:end]
+            if default_model:
+                model_desc = f"configured OpenAI model (OPENAI_MODEL env, default {default_model})"
+            else:
+                model_desc = "configured OpenAI model (OPENAI_MODEL env)"
+    except Exception:
+        # Fall back to generic description if introspection fails.
+        model_desc = "configured OpenAI model"
+
+    info["model"] = model_desc
+    name = getattr(fn, "__name__", "")
+    if name == "relevance_check":
+        info["ai_calls"] = "1"
+        info["mode"] = "always"
+    elif name == "level_resolution":
+        info["ai_calls"] = "conditional (0 or 1)"
+        info["mode"] = "only when level is inferred"
+    elif name == "topic_identification":
+        info["ai_calls"] = "conditional (0 or 1)"
+        info["mode"] = "optional LLM fallback (env TOPIC_USE_LLM_FALLBACK)"
+    else:
+        info["ai_calls"] = "0"
+        info["mode"] = "deterministic"
+    return info
+
+
 def _node_purpose(fn) -> str:
     """One short sentence from docstring. Structural only."""
     doc = inspect.getdoc(fn) or getattr(fn, "__doc__", "")
@@ -197,7 +256,7 @@ def _format_flow_overview(flow_order: list[str]) -> str:
     step_labels = {
         "relevance_check": "Decide if prompt is suitable for vocabulary-box generation",
         "level_resolution": "Resolve or infer learner level (CEFR)",
-        "topic_identification": "Identify topic/theme for the box",
+        "topic_identification": "Identify topic and short box name (e.g. Street Eats, City Break)",
         "box_creation_placeholder": "Build placeholder result (no real generation yet)",
     }
     lines = []
@@ -209,6 +268,17 @@ def _format_flow_overview(flow_order: list[str]) -> str:
         lines.append(f"{num}. {label}")
         lines.append("   -> " + (flow_order[i + 1] if i + 1 < len(flow_order) else "end"))
     return "\n".join(lines)
+
+
+def _format_graph_overview(flow_order: list[str]) -> str:
+    """Compact one-line graph view: [Start] -> [node] -> ... -> [End]."""
+    if not flow_order:
+        return "(no user-defined nodes in flow)"
+    parts = ["[Start]"]
+    for name in flow_order:
+        parts.append(f"[{name}]")
+    parts.append("[End]")
+    return " -> ".join(parts)
 
 
 def _format_node_card(
@@ -225,6 +295,7 @@ def _format_node_card(
     io = _DEBUG_NODE_IO.get(name, {})
     consumes = io.get("consumes", ["(inferred from state)"])
     produces = io.get("produces", ["(inferred from state)"])
+    ai_info = _introspect_ai_usage(fn)
     lines = []
     lines.append(f"[{step}] {name}")
     lines.append(f"  Role: {role}")
@@ -234,6 +305,11 @@ def _format_node_card(
         lines.append(f"  Function: {getattr(fn, '__name__', repr(fn))}()")
     if source:
         lines.append(f"  Source: {source}")
+    if ai_info:
+        lines.append("  AI usage:")
+        lines.append(f"    - AI calls: {ai_info.get('ai_calls', 'unknown')}")
+        lines.append(f"    - Model: {ai_info.get('model', 'unknown')}")
+        lines.append(f"    - Mode: {ai_info.get('mode', 'unknown')}")
     lines.append("  Consumes:")
     for c in consumes:
         lines.append(f"    - {c}")
@@ -274,6 +350,12 @@ def _build_ascii_debug_content(drawable, compiled_graph) -> str:
     sections.append(sep)
     sections.append("  LinguAI LangGraph – workflow debug view")
     sections.append(sep)
+
+    # Compact graph overview for quick visual scan
+    sections.append("")
+    sections.append("GRAPH OVERVIEW")
+    sections.append("-" * 60)
+    sections.append(_format_graph_overview(flow_order))
 
     # Flow overview (execution order)
     sections.append("")
@@ -464,6 +546,15 @@ def generate_boxes(req: GenerateBoxesRequest) -> GenerateBoxesResponse:
                 "topic": resp.topic,
                 "reached_box_creation": resp.reachedBoxCreation,
             },
+        )
+        log_evaluation_run(
+            req.requestId,
+            resp.status,
+            resp.topic,
+            resp.level,
+            resp.levelSource,
+            resp.reachedBoxCreation,
+            debug=DEBUG,
         )
         return resp
     except Exception:

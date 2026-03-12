@@ -24,9 +24,16 @@ build/
 *.swp
 *.swo
 *~
+.DS_Store
 
 # Logs and local artifacts
+logs/
 *.log
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Vocabulary DB and ingestion artifacts (runtime/ingestion output)
+data/vocab.db
+data/*.bak
+data/ingestion_logs/
