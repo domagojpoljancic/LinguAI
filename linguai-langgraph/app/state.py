@@ -11,12 +11,11 @@ class BoxWorkflowState(TypedDict, total=False):
     Carries request data and step outputs through the pipeline.
     """
 
-    # From request
+    # From request (each box has boxId, boxName, completionPercent, words)
     prompt: str
     default_language: str
     target_language: str
-    existing_boxes: List[dict]  # [{boxId, boxName, completionPercent}, ...]
-    existing_words: List[dict]   # [{default, target}, ...]
+    existing_boxes: List[dict]  # [{boxId, boxName, completionPercent, words: [{default, target}, ...]}, ...]
     request_id: str
     customer_id: str
 

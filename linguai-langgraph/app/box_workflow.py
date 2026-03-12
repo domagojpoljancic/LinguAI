@@ -3,10 +3,10 @@ Box-generation workflow nodes and routing.
 
 Architecture:
 - relevance_check (LLM)
-- level_resolution (deterministic: explicit CEFR → infer from boxes → infer from words; only stop when all fail)
-- topic_identification (deterministic keyword extraction; ready for optional LLM)
+- topic_identification (deterministic keyword extraction)
+- level_resolution (explicit CEFR in prompt, else LLM infer from boxes/words/completion/topic; always produces a level)
 - box_creation_placeholder (stub)
-Conditional edges: after relevance (relevant? → level_resolution | END), after level (level? → topic_identification | END).
+Words are nested under each box so level inference can use completion and vocabulary per box.
 """
 
 import logging
@@ -98,7 +98,23 @@ def relevance_check(state: BoxWorkflowState) -> dict:
         }
 
 
-# ---- Level resolution (explicit first, then inference; only stop when all fail) ----
+# ---- Level resolution (always produces a level: explicit or inferred; never ends flow) ----
+
+# Safe default when inference fails or output is invalid. Prefer lower level.
+DEFAULT_CEFR_WHEN_UNKNOWN = "A2"
+
+LEVEL_INFERENCE_SYSTEM = """You infer the learner's CEFR level (A1, A2, B1, B2, C1, C2) from their request and progress.
+
+You are given:
+- User request (topic or theme they asked for)
+- Their existing boxes: name, completion percentage, and sample of words in each box
+
+Rules:
+- Reply with exactly one level: A1, A2, B1, B2, C1, or C2. Nothing else.
+- When uncertain between two levels, prefer the LOWER level (e.g. choose A2 over B1). It is safer to suggest slightly easier vocabulary.
+- Consider: how many boxes, completion rates, which words they already have, and the topic (e.g. "basics" vs "advanced").
+"""
+
 
 def _parse_cefr_from_prompt(prompt: str) -> str | None:
     """Return explicit CEFR level from prompt if present. Deterministic."""
@@ -108,121 +124,84 @@ def _parse_cefr_from_prompt(prompt: str) -> str | None:
     return m.group(1).upper() if m else None
 
 
-def _infer_level_from_boxes(existing_boxes: list) -> str | None:
-    """
-    Heuristic: infer CEFR from average completion across boxes.
-    No boxes or no completion data -> return None.
-    """
+def _build_level_inference_context(state: BoxWorkflowState) -> str:
+    """Build structured context for LLM: boxes, completion, words sample, topic."""
+    existing_boxes = state.get("existing_boxes") or []
+    topic = (state.get("topic") or "").strip() or "general"
+    parts = [f"User request / topic: {topic}"]
     if not existing_boxes:
-        return None
-    percents = []
-    for b in existing_boxes:
-        p = b.get("completionPercent") if isinstance(b, dict) else getattr(b, "completionPercent", None)
-        if p is not None:
-            percents.append(float(p))
-    if not percents:
-        return None
-    avg = sum(percents) / len(percents)
-    n = len(existing_boxes)
-    if avg >= 70 and n >= 3:
-        return "B2"
-    if avg >= 50 and n >= 2:
-        return "B1"
-    if avg >= 25 or n >= 1:
-        return "A2"
-    return "A1"
+        parts.append("Existing boxes: none")
+        return "\n".join(parts)
+    # Prefer high-completion boxes first
+    sorted_boxes = sorted(
+        existing_boxes,
+        key=lambda b: float(b.get("completionPercent") or 0),
+        reverse=True,
+    )
+    for i, b in enumerate(sorted_boxes[:10]):
+        name = b.get("boxName") or b.get("boxId") or f"box_{i}"
+        pct = b.get("completionPercent")
+        pct_str = f"{float(pct):.0f}%" if pct is not None else "?"
+        words = b.get("words") or []
+        sample = " ".join((w.get("default") or w.get("target") or "") for w in words[:10])
+        if words:
+            sample = sample[:80] + ("..." if len(sample) > 80 else "")
+        else:
+            sample = "(no words)"
+        parts.append(f"Box: {name} | completion: {pct_str} | words sample: {sample}")
+    return "\n".join(parts)
 
 
-def _infer_level_from_words_heuristic(existing_words: list) -> str | None:
+def _infer_level_with_llm(state: BoxWorkflowState) -> str:
     """
-    Heuristic: infer level from existing word count / presence.
-    Many words -> assume higher level; few or none -> A1/A2.
-    Placeholder for LLM-based inference when LEVEL_INFERENCE_USE_LLM=true.
+    Infer CEFR from boxes/words/completion/topic via OpenAI. Returns valid CEFR.
+    On failure or invalid output returns DEFAULT_CEFR_WHEN_UNKNOWN (bias lower).
     """
-    if not existing_words:
-        return None
-    n = len(existing_words)
-    if n >= 50:
-        return "B2"
-    if n >= 20:
-        return "B1"
-    if n >= 5:
-        return "A2"
-    return "A1"
-
-
-def _infer_level_from_words_llm(prompt: str, existing_words: list) -> str | None:
-    """
-    Placeholder for LLM-based level inference from prompt + existing words.
-    Call when LEVEL_INFERENCE_USE_LLM=true. Returns CEFR or None.
-    """
-    # TODO: call OpenAI with prompt + sample of existing words; ask for single CEFR level
-    from app.config import LEVEL_INFERENCE_USE_LLM
-    if not LEVEL_INFERENCE_USE_LLM:
-        return None
+    prompt = state.get("prompt") or ""
+    existing_boxes = state.get("existing_boxes") or []
+    context = _build_level_inference_context(state)
     try:
         llm = _get_llm()
-        words_preview = " ".join(
-            (w.get("default") or w.get("target") or "" for w in (existing_words or [])[:20])
-        ) if existing_words else ""
         msg = llm.invoke([
-            SystemMessage(content="From the user request and their existing vocabulary, choose one CEFR level: A1, A2, B1, B2, C1, or C2. Reply with only the level, e.g. A2."),
-            HumanMessage(content=f"User request: {prompt}\nExisting words (sample): {words_preview}"),
+            SystemMessage(content=LEVEL_INFERENCE_SYSTEM),
+            HumanMessage(content=context),
         ])
         text = (msg.content or "").strip().upper()
         for lvl in CEFR_LEVELS:
             if lvl in text:
                 return lvl
     except Exception as e:
-        logger.debug("level_inference_llm failed: %s", e)
-    return None
+        logger.warning("level_inference_llm failed request_id=%s error=%s", state.get("request_id", ""), e)
+    return DEFAULT_CEFR_WHEN_UNKNOWN
 
 
 def level_resolution(state: BoxWorkflowState) -> dict:
     """
-    Resolve CEFR level: explicit in prompt first, then infer from boxes, then from words.
-    Sets level_source to "explicit" or "inferred". Only sets insufficient_confidence when
-    no level could be resolved after all attempts (flow then ends at route_after_level).
+    Always resolve a CEFR level: explicit in prompt first, else infer via LLM from boxes/words/completion/topic.
+    Never ends the flow; fallback to A2 when inference fails. Sets level_source to "explicit" or "inferred".
     """
     request_id = state.get("request_id", "")
     prompt = state.get("prompt") or ""
     existing_boxes = state.get("existing_boxes") or []
-    existing_words = state.get("existing_words") or []
 
     level = _parse_cefr_from_prompt(prompt)
-    source = "explicit" if level else ""
-
-    if not level:
-        level = _infer_level_from_boxes(existing_boxes)
-        if level:
-            source = "inferred"
-    if not level:
-        level = _infer_level_from_words_llm(prompt, existing_words)
-        if level:
-            source = "inferred"
-    if not level:
-        level = _infer_level_from_words_heuristic(existing_words)
-        if level:
-            source = "inferred"
+    source = "explicit" if level else "inferred"
 
     if level:
         logger.info(
-            "level_resolution request_id=%s level=%s source=%s",
-            request_id, level, source,
-            extra={"request_id": request_id, "level": level, "level_source": source},
+            "level_resolution request_id=%s level=%s source=explicit explicit_found=true",
+            request_id, level,
+            extra={"request_id": request_id, "level": level, "level_source": "explicit", "explicit_found": True},
         )
         return {"level": level, "level_source": source, "status": ""}
+
+    level = _infer_level_with_llm(state)
     logger.info(
-        "level_resolution request_id=%s no_level_after_inference",
-        request_id,
-        extra={"request_id": request_id, "level": None, "level_source": None},
+        "level_resolution request_id=%s level=%s source=inferred explicit_found=false inferred_used=true",
+        request_id, level,
+        extra={"request_id": request_id, "level": level, "level_source": "inferred", "explicit_found": False, "inferred_used": True},
     )
-    return {
-        "level": "",
-        "level_source": "",
-        "status": STATUS_INSUFFICIENT_CONFIDENCE,
-        "user_message": "I couldn't determine your level. Try mentioning it (e.g. A1, B2) or add some boxes with progress.",
-    }
+    return {"level": level, "level_source": source, "status": ""}
 
 
 # ---- Topic identification ----
@@ -282,20 +261,8 @@ def box_creation_placeholder(state: BoxWorkflowState) -> dict:
 # ---- Routers for conditional edges ----
 
 def route_after_relevance(state: BoxWorkflowState) -> str:
-    """If not relevant, end; else go to level resolution."""
+    """If not relevant, end; else go to topic_identification (then level_resolution, then box_creation)."""
     from langgraph.graph import END
     if state.get("is_relevant") is True:
-        return "level_resolution"
-    return END
-
-
-def route_after_level(state: BoxWorkflowState) -> str:
-    """
-    If no level resolved after explicit + inference, end.
-    Otherwise go to topic_identification (then box creation).
-    """
-    from langgraph.graph import END
-    level = state.get("level") or ""
-    if level.strip() in CEFR_LEVELS:
         return "topic_identification"
     return END

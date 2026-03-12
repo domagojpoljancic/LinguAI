@@ -7,25 +7,29 @@ from pydantic import BaseModel, Field
 
 # ---- Nested types for existing data (request) ----
 
-class ExistingBox(BaseModel):
-    """A box the customer already has. completionPercent supports level inference."""
-
-    boxId: str
-    boxName: str
-    completionPercent: float = Field(default=0.0, ge=0.0, le=100.0)
-
-
-class ExistingWord(BaseModel):
-    """A word pair the customer already has (in existing boxes)."""
+class WordInBox(BaseModel):
+    """A word pair belonging to a box (default/target language)."""
 
     default: str
     target: str
 
 
+class ExistingBox(BaseModel):
+    """
+    A box the customer already has, with its words and completion.
+    Words are nested so level inference can use completion and vocabulary per box.
+    """
+
+    boxId: str
+    boxName: str
+    completionPercent: float = Field(default=0.0, ge=0.0, le=100.0)
+    words: List[WordInBox] = Field(default_factory=list)
+
+
 # ---- Request: POST /generate-boxes ----
 
 class GenerateBoxesRequest(BaseModel):
-    """Request body for generating one box of words."""
+    """Request body for generating one box of words. Words live inside each box."""
 
     requestId: str
     customerId: str
@@ -33,7 +37,6 @@ class GenerateBoxesRequest(BaseModel):
     defaultLanguage: str
     targetLanguage: str
     existingBoxes: List[ExistingBox] = Field(default_factory=list)
-    existingWords: List[ExistingWord] = Field(default_factory=list)
 
 
 # ---- Nested types for generated data (response) ----
