@@ -29,7 +29,6 @@ build/
 # Logs and local artifacts
 logs/
 *.log
-PRESERVED_COMMIT*.patch
 .pytest_cache/
 .coverage
 htmlcov/
@@ -38,18 +37,3 @@ htmlcov/
 data/vocab.db
 data/*.bak
 data/ingestion_logs/
-# Large Wiktionary dump (download via scripts/download_wiktionary.py)
-data/raw/wiktionary/kaikki.org-dictionary-English.jsonl
-
-# Xcode and macOS (LinguAI repo)
-build/
-Build/
-DerivedData/
-*.xcuserdatad
-xcuserdata/
-**/UserInterfaceState.xcuserstate
-**/project.xcworkspace/xcshareddata/
-.build/
-.swiftpm/
-*.cert
-*.mobileprovision

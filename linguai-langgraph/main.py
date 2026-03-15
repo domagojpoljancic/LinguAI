@@ -73,7 +73,7 @@ _DEBUG_NODE_ROLES = {
     "relevance_check": "gate",
     "level_resolution": "enrichment",
     "topic_identification": "preparation",
-    "box_creation_placeholder": "retrieval and box build",
+    "box_creation_placeholder": "placeholder generation",
 }
 _DEBUG_NODE_IO = {
     "relevance_check": {
@@ -86,17 +86,17 @@ _DEBUG_NODE_IO = {
     },
     "topic_identification": {
         "consumes": ["prompt"],
-        "produces": ["topic", "topic_confidence", "topic_source", "topic_reason"],
+        "produces": ["topic"],
     },
     "box_creation_placeholder": {
-        "consumes": ["topic", "topic_source", "topic_reason", "level", "default_language", "target_language", "existing_boxes"],
-        "produces": ["status", "boxes", "user_message", "reached_box_creation", "candidate_debug (if DEBUG_BOX_CANDIDATES=1)"],
+        "consumes": ["(full state for response build)"],
+        "produces": ["status", "boxes", "user_message", "reached_box_creation"],
     },
 }
 
 # State keys grouped for readability (from BoxWorkflowState).
 _DEBUG_STATE_REQUEST = ["request_id", "customer_id", "prompt", "default_language", "target_language", "existing_boxes"]
-_DEBUG_STATE_WORKFLOW = ["is_relevant", "relevance_user_message", "level", "level_source", "topic", "topic_confidence", "topic_source", "topic_reason", "reached_box_creation"]
+_DEBUG_STATE_WORKFLOW = ["is_relevant", "relevance_user_message", "level", "level_source", "topic", "reached_box_creation"]
 _DEBUG_STATE_RESPONSE = ["status", "user_message", "boxes"]
 
 
@@ -223,7 +223,7 @@ def _introspect_ai_usage(fn) -> dict[str, str]:
         info["mode"] = "only when level is inferred"
     elif name == "topic_identification":
         info["ai_calls"] = "conditional (0 or 1)"
-        info["mode"] = "deterministic fast-path; AI fallback when topic is general or low confidence"
+        info["mode"] = "optional LLM fallback (env TOPIC_USE_LLM_FALLBACK)"
     else:
         info["ai_calls"] = "0"
         info["mode"] = "deterministic"
@@ -256,8 +256,8 @@ def _format_flow_overview(flow_order: list[str]) -> str:
     step_labels = {
         "relevance_check": "Decide if prompt is suitable for vocabulary-box generation",
         "level_resolution": "Resolve or infer learner level (CEFR)",
-        "topic_identification": "Identify topic (hybrid: deterministic keywords or AI); output topic key, confidence, source, reason",
-        "box_creation_placeholder": "Retrieve vocabulary by topic/level (deterministic); situation-aware ranking when topic from AI; build box",
+        "topic_identification": "Identify topic and short box name (e.g. Street Eats, City Break)",
+        "box_creation_placeholder": "Build placeholder result (no real generation yet)",
     }
     lines = []
     lines.append("1. Request enters workflow")
@@ -270,19 +270,13 @@ def _format_flow_overview(flow_order: list[str]) -> str:
     return "\n".join(lines)
 
 
-# Display names for graph overview (internal node names -> diagram label)
-_DEBUG_NODE_DISPLAY_NAMES = {
-    "box_creation_placeholder": "box_creation",
-}
-
 def _format_graph_overview(flow_order: list[str]) -> str:
     """Compact one-line graph view: [Start] -> [node] -> ... -> [End]."""
     if not flow_order:
         return "(no user-defined nodes in flow)"
     parts = ["[Start]"]
     for name in flow_order:
-        display = _DEBUG_NODE_DISPLAY_NAMES.get(name, name)
-        parts.append(f"[{display}]")
+        parts.append(f"[{name}]")
     parts.append("[End]")
     return " -> ".join(parts)
 
@@ -393,8 +387,7 @@ def _build_ascii_debug_content(drawable, compiled_graph) -> str:
 
 def _build_app_flow_mermaid() -> str:
     """
-    Build Mermaid for full app flow and box workflow.
-    Topic: hybrid (deterministic or AI). Retrieval: deterministic; situation-aware ranking when topic_source=ai.
+    Build Mermaid for full app flow and box workflow (boxes carry nested words).
     """
     return """flowchart TB
   subgraph app[" App flow "]
@@ -407,9 +400,9 @@ def _build_app_flow_mermaid() -> str:
   subgraph workflow[" Box workflow "]
     W1[relevance_check] --> W2{relevant?}
     W2 -->|no| WEND1[END]
-    W2 -->|yes| W3[topic_identification hybrid]
+    W2 -->|yes| W3[topic_identification]
     W3 --> W4[level_resolution]
-    W4 --> W5[box_creation]
+    W4 --> W5[box_creation_placeholder]
     W5 --> WEND2[END]
   end
   D --> workflow
@@ -503,11 +496,7 @@ def _workflow_state_to_response(state: dict) -> GenerateBoxesResponse:
         level=state.get("level") or None,
         levelSource=state.get("level_source") or None,
         topic=state.get("topic") or None,
-        topicSource=state.get("topic_source") or None,
-        topicConfidence=state.get("topic_confidence"),
-        topicReason=state.get("topic_reason") or None,
         reachedBoxCreation=state.get("reached_box_creation") is True,
-        candidate_debug=state.get("candidate_debug"),
     )
 
 
@@ -624,5 +613,4 @@ def debug_graph_render():
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", "2024"))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=2024, reload=True)
