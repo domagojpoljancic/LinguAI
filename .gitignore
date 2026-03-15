@@ -1,0 +1,42 @@
+# Environment and secrets (never commit)
+.env
+.env.*
+!.env.example
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# IDE and local
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs and local artifacts
+logs/
+*.log
+PRESERVED_COMMIT*.patch
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Vocabulary DB and ingestion artifacts (runtime/ingestion output)
+data/vocab.db
+data/*.bak
+data/ingestion_logs/
+# Large Wiktionary dump (download via scripts/download_wiktionary.py)
+data/raw/wiktionary/kaikki.org-dictionary-English.jsonl

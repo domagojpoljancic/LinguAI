@@ -1,0 +1,495 @@
+[
+  {
+    "name": "EXPLICIT_CEFR_LEVEL_IN_PROMPT",
+    "description": "Prompt clearly states B2; tests explicit level detection.",
+    "expected": { "status": "generated_placeholder", "level": "B2", "levelSource": "explicit", "reachedBoxCreation": true },
+    "payload": {
+      "requestId": "req-explicit-level-b2-001",
+      "customerId": "cust-1001",
+      "prompt": "I'm around B2 in English and want business vocabulary for meetings.",
+      "defaultLanguage": "en",
+      "targetLanguage": "de",
+      "existingBoxes": [
+        {
+          "boxId": "box-intro-1",
+          "boxName": "General phrases",
+          "completionPercent": 40.0,
+          "words": [
+            { "default": "hello", "target": "hallo" },
+            { "default": "thank you", "target": "danke" }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "EXPLICIT_A1_SIMPLE_TOPIC",
+    "description": "Explicit A1 with a simple topic; tests A1 extraction and topic.",
+    "expected": { "status": "generated_placeholder", "level": "A1", "levelSource": "explicit", "reachedBoxCreation": true },
+    "payload": {
+      "requestId": "req-explicit-a1-simple-011",
+      "customerId": "cust-1011",
+      "prompt": "I need A1 words for greetings and basics in French.",
+      "defaultLanguage": "en",
+      "targetLanguage": "fr",
+      "existingBoxes": []
+    }
+  },
+  {
+    "name": "EXPLICIT_B2_OR_C1_ADVANCED_TOPIC",
+    "description": "Explicit B2/C1 with advanced topic; tests high-level + business/negotiation.",
+    "payload": {
+      "requestId": "req-explicit-b2-advanced-012",
+      "customerId": "cust-1012",
+      "prompt": "I want C1 vocabulary for business negotiations and contracts in German.",
+      "defaultLanguage": "en",
+      "targetLanguage": "de",
+      "existingBoxes": [
+        {
+          "boxId": "box-biz-1",
+          "boxName": "Business meetings",
+          "completionPercent": 70.0,
+          "words": [
+            { "default": "agenda", "target": "Tagesordnung" },
+            { "default": "deadline", "target": "Frist" }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "INFER_BEGINNER_LEVEL_FROM_BOXES",
+    "description": "No explicit level; beginner words and low-mid progress; should infer A1/A2.",
+    "expected": { "status": "generated_placeholder", "levelSource": "inferred", "reachedBoxCreation": true, "boxes_non_empty": true },
+    "payload": {
+      "requestId": "req-infer-beginner-002",
+      "customerId": "cust-1002",
+      "prompt": "I want some basic everyday words in Spanish.",
+      "defaultLanguage": "en",
+      "targetLanguage": "es",
+      "existingBoxes": [
+        {
+          "boxId": "box-greetings-1",
+          "boxName": "Greetings",
+          "completionPercent": 45.0,
+          "words": [
+            { "default": "hello", "target": "hola" },
+            { "default": "goodbye", "target": "adiós" },
+            { "default": "please", "target": "por favor" }
+          ]
+        },
+        {
+          "boxId": "box-numbers-1",
+          "boxName": "Numbers 1-10",
+          "completionPercent": 30.0,
+          "words": [
+            { "default": "one", "target": "uno" },
+            { "default": "two", "target": "dos" },
+            { "default": "three", "target": "tres" }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "INFER_INTERMEDIATE_LEVEL_FROM_STRONG_PROGRESS",
+    "description": "No explicit level; advanced words and high completion; should infer B1/B2.",
+    "payload": {
+      "requestId": "req-infer-intermediate-003",
+      "customerId": "cust-1003",
+      "prompt": "Could you give me more vocabulary for business negotiations and presentations in English?",
+      "defaultLanguage": "de",
+      "targetLanguage": "en",
+      "existingBoxes": [
+        {
+          "boxId": "box-business-1",
+          "boxName": "Business basics",
+          "completionPercent": 80.0,
+          "words": [
+            { "default": "deadline", "target": "deadline" },
+            { "default": "meeting agenda", "target": "meeting agenda" },
+            { "default": "invoice", "target": "invoice" }
+          ]
+        },
+        {
+          "boxId": "box-advanced-phrases-1",
+          "boxName": "Advanced business phrases",
+          "completionPercent": 65.0,
+          "words": [
+            { "default": "negotiate", "target": "negotiate" },
+            { "default": "compromise", "target": "compromise" },
+            { "default": "stakeholder", "target": "stakeholder" }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "IRRELEVANT_PROMPT",
+    "description": "User asks something unrelated to vocabulary box generation; tests relevance rejection.",
+    "expected": { "status": "irrelevant_request", "reachedBoxCreation": false },
+    "payload": {
+      "requestId": "req-irrelevant-004",
+      "customerId": "cust-1004",
+      "prompt": "What is the weather going to be like in Berlin tomorrow?",
+      "defaultLanguage": "en",
+      "targetLanguage": "de",
+      "existingBoxes": [
+        {
+          "boxId": "box-random-1",
+          "boxName": "Random words",
+          "completionPercent": 10.0,
+          "words": [
+            { "default": "sun", "target": "Sonne" },
+            { "default": "rain", "target": "Regen" }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "IRRELEVANT_BUT_LANGUAGE_RELATED",
+    "description": "Superficially language-related but not a request for a word list; should be rejected.",
+    "payload": {
+      "requestId": "req-irrelevant-language-013",
+      "customerId": "cust-1013",
+      "prompt": "How do you say 'hello' in Spanish?",
+      "defaultLanguage": "en",
+      "targetLanguage": "es",
+      "existingBoxes": []
+    }
+  },
+  {
+    "name": "TOPIC_CLEARLY_STATED",
+    "description": "Prompt clearly asks for restaurant topic; tests topic -> short box name.",
+    "payload": {
+      "requestId": "req-topic-restaurant-005",
+      "customerId": "cust-1005",
+      "prompt": "I need restaurant vocabulary in French for ordering food and drinks.",
+      "defaultLanguage": "en",
+      "targetLanguage": "fr",
+      "existingBoxes": [
+        {
+          "boxId": "box-travel-phrases-1",
+          "boxName": "Travel phrases",
+          "completionPercent": 50.0,
+          "words": [
+            { "default": "ticket", "target": "billet" },
+            { "default": "hotel", "target": "hôtel" }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "WEAK_OR_AMBIGUOUS_PROMPT",
+    "description": "Minimal vague request; tests fallback handling and low-confidence path.",
+    "expected": { "status": "generated_placeholder", "reachedBoxCreation": true, "boxes_non_empty": true },
+    "payload": {
+      "requestId": "req-weak-prompt-006",
+      "customerId": "cust-1006",
+      "prompt": "More words please.",
+      "defaultLanguage": "en",
+      "targetLanguage": "es",
+      "existingBoxes": [
+        {
+          "boxId": "box-basics-1",
+          "boxName": "Basic phrases",
+          "completionPercent": 35.0,
+          "words": [
+            { "default": "hello", "target": "hola" },
+            { "default": "good morning", "target": "buenos días" }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "HARD_CASE_MIXED_BOX_QUALITY",
+    "description": "Review + add harder words; mixed completion and difficulty; tests relevance and inference.",
+    "payload": {
+      "requestId": "req-mixed-boxes-007",
+      "customerId": "cust-1007",
+      "prompt": "I'd like to review vocabulary I already know and add a few harder words.",
+      "defaultLanguage": "en",
+      "targetLanguage": "de",
+      "existingBoxes": [
+        {
+          "boxId": "box-beginner-phrases-1",
+          "boxName": "Beginner phrases",
+          "completionPercent": 90.0,
+          "words": [
+            { "default": "good evening", "target": "guten Abend" },
+            { "default": "excuse me", "target": "entschuldigung" },
+            { "default": "where is the toilet", "target": "wo ist die Toilette" }
+          ]
+        },
+        {
+          "boxId": "box-intermediate-1",
+          "boxName": "Intermediate travel vocabulary",
+          "completionPercent": 40.0,
+          "words": [
+            { "default": "reservation", "target": "Reservierung" },
+            { "default": "insurance", "target": "Versicherung" },
+            { "default": "embassy", "target": "Botschaft" }
+          ]
+        },
+        {
+          "boxId": "box-advanced-1",
+          "boxName": "Advanced business terms",
+          "completionPercent": 15.0,
+          "words": [
+            { "default": "liability", "target": "Haftung" },
+            { "default": "merger", "target": "Fusion" }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "VERY_INDIRECT_BUT_RELEVANT",
+    "description": "Conversational, indirect request that is still about getting vocabulary.",
+    "payload": {
+      "requestId": "req-indirect-014",
+      "customerId": "cust-1014",
+      "prompt": "I'm going to Paris next month and I'm a bit worried about ordering at restaurants. Anything that could help?",
+      "defaultLanguage": "en",
+      "targetLanguage": "fr",
+      "existingBoxes": []
+    }
+  },
+  {
+    "name": "CONVERSATIONAL_NOT_COMMAND",
+    "description": "Sounds like chat, not a command; still a vocabulary request.",
+    "payload": {
+      "requestId": "req-conversational-015",
+      "customerId": "cust-1015",
+      "prompt": "Hey, could you maybe put together some words for dating? Like things you'd say on a first date?",
+      "defaultLanguage": "en",
+      "targetLanguage": "es",
+      "existingBoxes": []
+    }
+  },
+  {
+    "name": "REAL_LIFE_SCENARIO",
+    "description": "User asks for words for a specific real-life scenario (job interview).",
+    "payload": {
+      "requestId": "req-reallife-016",
+      "customerId": "cust-1016",
+      "prompt": "I have a job interview in German next week. I need vocabulary for talking about my experience and goals.",
+      "defaultLanguage": "en",
+      "targetLanguage": "de",
+      "existingBoxes": [
+        {
+          "boxId": "box-office-1",
+          "boxName": "Office Chat",
+          "completionPercent": 50.0,
+          "words": [
+            { "default": "meeting", "target": "Besprechung" },
+            { "default": "email", "target": "E-Mail" }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "MISLEADING_BUT_RELEVANT",
+    "description": "Phrased like a question but clearly asking for a word list; should be relevant.",
+    "payload": {
+      "requestId": "req-misleading-017",
+      "customerId": "cust-1017",
+      "prompt": "What words should I learn for airport and flying?",
+      "defaultLanguage": "en",
+      "targetLanguage": "it",
+      "existingBoxes": []
+    }
+  },
+  {
+    "name": "TOPIC_CLEAR_LEVEL_NOT",
+    "description": "Topic (travel) is clear; no CEFR in prompt; level must be inferred.",
+    "payload": {
+      "requestId": "req-topic-clear-level-not-018",
+      "customerId": "cust-1018",
+      "prompt": "Travel and airport phrases in Portuguese, please.",
+      "defaultLanguage": "en",
+      "targetLanguage": "pt",
+      "existingBoxes": [
+        {
+          "boxId": "box-travel-1",
+          "boxName": "City Break",
+          "completionPercent": 20.0,
+          "words": [
+            { "default": "passport", "target": "passaporte" },
+            { "default": "luggage", "target": "bagagem" }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "LEVEL_EXPLICIT_TOPIC_WEAK",
+    "description": "B1 explicit; topic is vague (no clear keyword); tests level path with generic topic.",
+    "payload": {
+      "requestId": "req-level-explicit-topic-weak-019",
+      "customerId": "cust-1019",
+      "prompt": "B1 words for stuff I use every day.",
+      "defaultLanguage": "en",
+      "targetLanguage": "nl",
+      "existingBoxes": []
+    }
+  },
+  {
+    "name": "VERY_SPARSE_BOX_HISTORY",
+    "description": "Existing boxes present but very small; tests fallback to safer lower level.",
+    "payload": {
+      "requestId": "req-almost-empty-009",
+      "customerId": "cust-1009",
+      "prompt": "I just started learning Spanish, can I get some basic words?",
+      "defaultLanguage": "en",
+      "targetLanguage": "es",
+      "existingBoxes": [
+        {
+          "boxId": "box-tiny-1",
+          "boxName": "First words",
+          "completionPercent": 5.0,
+          "words": [
+            { "default": "hello", "target": "hola" }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "STRONG_HIGH_COMPLETION_ADVANCED_WORDS",
+    "description": "High completion and advanced vocabulary; should infer B2/C1.",
+    "payload": {
+      "requestId": "req-strong-advanced-020",
+      "customerId": "cust-1020",
+      "prompt": "I want more vocabulary for legal and contract discussions.",
+      "defaultLanguage": "en",
+      "targetLanguage": "de",
+      "existingBoxes": [
+        {
+          "boxId": "box-legal-1",
+          "boxName": "Legal terms",
+          "completionPercent": 85.0,
+          "words": [
+            { "default": "plaintiff", "target": "Kläger" },
+            { "default": "defendant", "target": "Beklagter" },
+            { "default": "liability", "target": "Haftung" },
+            { "default": "breach of contract", "target": "Vertragsbruch" }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "DUPLICATE_HEAVY_WORD_HISTORY",
+    "description": "Many similar/repeated words across boxes; tests inference with redundant data.",
+    "payload": {
+      "requestId": "req-duplicate-heavy-021",
+      "customerId": "cust-1021",
+      "prompt": "More greetings and polite phrases in Italian.",
+      "defaultLanguage": "en",
+      "targetLanguage": "it",
+      "existingBoxes": [
+        {
+          "boxId": "box-g-1",
+          "boxName": "Greetings A",
+          "completionPercent": 100.0,
+          "words": [
+            { "default": "hello", "target": "ciao" },
+            { "default": "hi", "target": "ciao" },
+            { "default": "good morning", "target": "buongiorno" }
+          ]
+        },
+        {
+          "boxId": "box-g-2",
+          "boxName": "Greetings B",
+          "completionPercent": 80.0,
+          "words": [
+            { "default": "hello", "target": "ciao" },
+            { "default": "goodbye", "target": "arrivederci" }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "DIFFERENT_LANGUAGE_PAIR",
+    "description": "English to Italian; ensures language-agnostic handling.",
+    "payload": {
+      "requestId": "req-lang-pair-en-it-008",
+      "customerId": "cust-1008",
+      "prompt": "Please give me travel and airport vocabulary in Italian.",
+      "defaultLanguage": "en",
+      "targetLanguage": "it",
+      "existingBoxes": [
+        {
+          "boxId": "box-greetings-it-1",
+          "boxName": "Italian greetings",
+          "completionPercent": 55.0,
+          "words": [
+            { "default": "hello", "target": "ciao" },
+            { "default": "goodbye", "target": "arrivederci" }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "BORDERLINE_RELEVANCE",
+    "description": "Unclear whether user wants a word list or just a tip; borderline case.",
+    "payload": {
+      "requestId": "req-borderline-022",
+      "customerId": "cust-1022",
+      "prompt": "I'm learning German. What do you recommend?",
+      "defaultLanguage": "en",
+      "targetLanguage": "de",
+      "existingBoxes": []
+    }
+  },
+  {
+    "name": "RICH_REALISTIC_CUSTOMER_CASE",
+    "description": "Believable real-world payload; exercises full workflow end-to-end.",
+    "payload": {
+      "requestId": "req-realistic-010",
+      "customerId": "cust-1010",
+      "prompt": "I'm preparing for a business trip to Paris. Please give me more B1-B2 business meeting vocabulary in French.",
+      "defaultLanguage": "en",
+      "targetLanguage": "fr",
+      "existingBoxes": [
+        {
+          "boxId": "box-restaurant-fr-1",
+          "boxName": "Restaurant basics",
+          "completionPercent": 75.0,
+          "words": [
+            { "default": "menu", "target": "menu" },
+            { "default": "bill", "target": "addition" },
+            { "default": "reservation", "target": "réservation" }
+          ]
+        },
+        {
+          "boxId": "box-travel-fr-1",
+          "boxName": "Travel and hotel",
+          "completionPercent": 60.0,
+          "words": [
+            { "default": "check-in", "target": "enregistrement" },
+            { "default": "boarding pass", "target": "carte d'embarquement" },
+            { "default": "reception", "target": "réception" }
+          ]
+        },
+        {
+          "boxId": "box-business-fr-1",
+          "boxName": "Business meetings",
+          "completionPercent": 40.0,
+          "words": [
+            { "default": "agenda", "target": "ordre du jour" },
+            { "default": "minutes", "target": "compte rendu" },
+            { "default": "deadline", "target": "date limite" }
+          ]
+        }
+      ]
+    }
+  }
+]
