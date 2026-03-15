@@ -1,109 +1,104 @@
-# linguai-langgraph
+# LinguAI
 
-Minimal LangGraph backend for the LinguAI iOS app. Exposes a FastAPI server with a health route and a chat endpoint backed by a single-node LangGraph agent (OpenAI gpt-4o-mini).
+**Vocabulary that sticks — without the overwhelm.**
 
-## Setup
+LinguAI is an iOS app that helps you learn and retain vocabulary using a proven **6-box Leitner system** and **silent spaced repetition**. You focus on studying; the app quietly prioritises what you need to review next.
 
-1. **Create a virtual environment**
+This repo contains:
 
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate   # Windows: .venv\Scripts\activate
-   ```
+- **iOS app** — at the repo root: `LinguAI.xcodeproj`, `LinguAI/`, `LinguAITests/`, `Specifications/`
+- **Backend** — in [`linguai-langgraph/`](linguai-langgraph/): FastAPI + LangGraph for chat and vocabulary box generation (see [linguai-langgraph/README.md](linguai-langgraph/README.md) for setup and API)
 
-2. **Install dependencies**
+---
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+## Why LinguAI
 
-3. **Configure environment**
+Most vocabulary tools either bombard you with "due" counts and timers or hide how repetition works. LinguAI takes a different approach:
 
-   Copy `.env` or set `OPENAI_API_KEY`:
+- **Clear progression** — Words move through six boxes (1 → … → 6). Correct answers move a word up; wrong answers reset it to Box 1. You always see where each word stands.
+- **Silent SRS** — Spaced repetition runs in the background. The app prefers words that are due for review but never locks you into a fixed schedule. Want to study more? You can.
+- **No guilt, no clutter** — No due badges or countdowns. Just open a box, choose your session size, and study. The system does the rest.
 
-   ```bash
-   # .env
-   OPENAI_API_KEY=your_openai_api_key_here
-   ```
+Built as a side project by a product manager who wanted a simple, effective vocabulary tool — and who cares as much about the learning science as the experience.
 
-## Run the server
+---
 
-From the project root:
+## What you can do (v0.1)
 
-```bash
-uvicorn main:app --reload --port 2024 --host 0.0.0.0
-```
+- **Create vocabulary boxes** — One box per topic or language (e.g. Greetings, Travel). Name them, pick a target language (e.g. German, Italian, Croatian).
+- **Add words** — Enter target-language word + translation. Optional: type in one field and use **Translate to [language]** to fill the other (on-device translation, 5s timeout; clear error messages if unavailable). Words start in Box 1 and are available to study immediately.
+- **Study with cards** — Swipe or tap to reveal the answer; mark correct or incorrect. Words move up a box (or back to 1) based on your answer.
+- **Box progression view** — See six boxes (1–5 numbered, 6 = **Mastered**) with word counts and progress. Choose which boxes to include in each session.
+- **Settings** — Study direction (which language → which), words per session (capped by your selection), haptic feedback. Version label at the bottom for tracking.
 
-Or:
+*More features (e.g. AI-suggested lists) are planned; the core loop is solid and ready for daily use.*
 
-```bash
-python main.py
-```
+---
 
-**Why `--host 0.0.0.0`?** So the iOS app can connect. By default the server only listens on `127.0.0.1` (this machine only). Binding to `0.0.0.0` accepts connections from other devices on your network.
+## How it works
 
-- On this machine: [http://localhost:2024/](http://localhost:2024/)
-- From iPhone/iPad: use your Mac’s IP, e.g. `http://192.168.1.5:2024` (find it in **System Settings → Network**)
-- Chat: `POST /chat`
+### 6-box Leitner system
 
-**If you see “Couldn’t connect to server”:** (1) Confirm the server is running. (2) Use `--host 0.0.0.0`. (3) From a physical device, use the computer’s IP and port (e.g. `http://192.168.1.5:2024`), not `localhost`.
+| Your answer | What happens        |
+|------------|---------------------|
+| **Correct** | Word moves up one box (1→2→…→6). |
+| **Incorrect** | Word goes back to Box 1. |
 
-## Example request
+**Box 6 = Mastered** — Words here are treated as learned and are left out of the default "due" rotation. You can still include the Mastered box when you start a session if you want to review them.
 
-```bash
-curl -X POST http://localhost:2024/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "How do I say thank you in Spanish?"}'
-```
+Progress is shown as 0–100%: Box 1 = 0%, Box 2 = 20%, … Box 6 = 100%.
 
-Example response:
+### Silent spaced repetition (SRS)
 
-```json
-{"response": "In Spanish you say \"gracias\" for thank you. ..."}
-```
+SRS runs behind the scenes. No due dates or timers in the UI.
 
-## HOW TO SEE LOGS LIVE
+- **When you get it right** — The app schedules the next review from *start of today* (your local timezone) plus an interval by box: Box 2 → +1 day, 3 → +2 days, 4 → +4 days, 5 → +7 days. Mastered words are not scheduled again.
+- **When you get it wrong** — The word returns to Box 1 and is eligible again right away.
 
-Logs go to **stderr** by default (Python’s logging). Where you see them depends on how you run the app:
+**Session building (two-pass):**
 
-- **PyCharm Run tool window**  
-  Run `main.py` or the “Run FastAPI” configuration. All log lines appear in the **Run** tool window at the bottom. Scroll to see `request_received`, `relevance_check`, `level_resolution`, `topic_identification`, `box_creation_placeholder`, and `request_complete`.
+1. **Pass 1** — Fill the session with words that are "due" (next review today or in the past), oldest first.
+2. **Pass 2** — If there aren't enough due words, fill the rest with "future" words (soonest next review first, then shuffled for variety).
 
-- **PyCharm Debug tool window**  
-  Same as Run: run under Debug and watch the **Debug** tool window (console tab). Breakpoints will pause execution; logs before/after appear there.
+So due items are prioritised, but you're never blocked from studying more — you choose session size and which boxes to include.
 
-- **Terminal (uvicorn manually)**  
-  Run: `uvicorn main:app --reload --port 2024 --host 0.0.0.0`. All logs print in that terminal. No separate log file unless you redirect (e.g. `... 2> app.log`).
+---
 
-- **Debug mode and payload logging**  
-  Set `DEBUG=true` in your environment (or in `.env`). Then:
-  - **With DEBUG=true**: the app logs the **full request body** at debug level for each request (`request_payload requestId=... body={...}`). Use this only locally; do not enable in production (privacy).
-  - **With DEBUG=false** (or unset): only summary fields are logged (requestId, prompt length, counts, status, level, topic, etc.). No full prompt text or payload in logs.
+## Tech and quality (iOS)
 
-- **Candidate selection debug (local only):** Start the server with `DEBUG_BOX_CANDIDATES=1` (e.g. `DEBUG_BOX_CANDIDATES=1 uvicorn main:app --port 2024 --host 0.0.0.0`). Then each `POST /generate-boxes` response includes `candidate_debug`: a per-word list with `topic`, `level`, `source_type`, `matched_primary_topic`, `from_widened`, and `selection_reason` for why each word was chosen.
+- **Stack:** SwiftUI, SwiftData, Translation framework (iOS).
+- **Testing:** All unit and integration tests use **Swift Testing** (`LinguAITests`). Coverage includes Leitner engine, SRS intervals, two-pass session selection, box/word CRUD and cascade delete, progress values, validation (duplicate box name / word pair), data seeding, and record-answer flow. Helpers: `TestingContainer` (in-memory SwiftData), `TestFixtures`. See `LinguAITests/TEST_PLAN.md` and `LinguAITests/TROUBLESHOOTING.md` for details. **Behavioral specs:** human-readable Given/When/Then scenarios live in `Specifications/`; executable tests implementing them are in `LinguAITests/BehaviorSpecs.swift`.
+- **Version:** v0.1 (Build 1) — internal release.
 
-- **Topic and response fields:** The `POST /generate-boxes` response includes `topic` (internal key: restaurant, travel, health, etc.), `topicSource` (`deterministic` or `ai`), `topicConfidence` (0–1), and `topicReason` (when AI resolved the topic). Topic identification is hybrid: deterministic keyword fast-path first; AI fallback for natural prompts. When topic comes from AI, retrieval uses situation-aware ranking so more relevant words appear first.
+### High-level architecture
 
-## Vocabulary DB and ingestion
+- **Models:** `VocabularyBox`, `BoxWord` (SwiftData); Leitner and SRS logic in `VocabularyModels.swift`. Pure validation in `Validation.swift`.
+- **UI:** `ContentView` → category grid; `VocabularyBoxesView` → box list and detail; study flow and Add/Edit word sheets in the same file. Settings and study direction stored in `UserDefaults` / `@AppStorage`.
+- **Data:** One-time seed via `DataSeeding` (e.g. "Grundlagen" for empty DB); in-memory container only in tests.
 
-The `/generate-boxes` endpoint uses a SQLite vocabulary DB (`data/vocab.db`). To seed it:
+---
 
-1. **Sample data only (EN→DE + EN→ES, 5 words)** — no download:
-   ```bash
-   python scripts/ingest_vocabulary.py --rebuild --cefr-path data/raw/cefr/cefrj-vocabulary-profile-1.5.csv --wiktionary-path data/raw/wiktionary/sample_en.jsonl --target-lang de,es
-   ```
+## Getting started
 
-2. **Full CEFR + full Wiktionary** — download the [kaikki.org English JSONL](https://kaikki.org/dictionary/English/kaikki.org-dictionary-English.jsonl) (~2.7GB) into `data/raw/wiktionary/` (e.g. `python scripts/download_wiktionary.py` or the curl command in that script’s docstring). Download the [CEFR CSV](https://github.com/openlanguageprofiles/olp-en-cefrj/blob/master/cefrj-vocabulary-profile-1.5.csv) to `data/raw/cefr/` if `--fetch-cefr` fails (e.g. SSL). Then:
-   ```bash
-   python scripts/ingest_vocabulary.py --rebuild --cefr-path data/raw/cefr/cefrj-vocabulary-profile-1.5.csv --wiktionary-path data/raw/wiktionary/kaikki.org-dictionary-English.jsonl --target-lang de,es
-   ```
+### iOS app
 
-Supported target languages from the same JSONL: `de`, `es` (and optionally `fr`). CEFR source: [Open Language Profiles CEFR-J](https://github.com/openlanguageprofiles/olp-en-cefrj) (English headwords + levels).
+1. Clone the repo and open **`LinguAI.xcodeproj`** in Xcode (at the repo root).
+2. Build and run on a simulator or device (iOS 26+).
+3. Create a box, add words, and start studying.
 
-**Data QA (audit):**
-- `python scripts/audit_vocab.py` — row counts, by pair/level/source_type/topic, nulls, sample rows.
-- `python scripts/audit_cefr_c1_c2.py` — C1/C2 checkup: raw CEFR vs post-parse vs DB; explains why C1/C2 are absent if so.
+**Running tests:** In Xcode **Product → Test** (⌘U), or use the Test navigator (⌘6). All tests use in-memory persistence; no production database is touched.
 
-**Validation (API must be running):**
-- `python scripts/validate_topic_prompts.py` — topic resolution only (deterministic vs AI).
-- `python scripts/validate_end_to_end_prompts.py` — full E2E: explicit + natural prompts, box content, quality checks, regression. See `docs/E2E_VALIDATION_SUMMARY.md`.
+### Backend
+
+The LangGraph backend (FastAPI, chat, `/generate-boxes`) lives in **`linguai-langgraph/`**. For setup, running the server, vocabulary DB, and API details, see **[linguai-langgraph/README.md](linguai-langgraph/README.md)**.
+
+---
+
+## Status and roadmap
+
+- **v0.1** — Basic vocabulary box functionality: create boxes, add words, study with Leitner + silent SRS, Mastered box, settings, tests, and docs.
+- **Next** — "AI Suggest" for generated vocabulary lists; further UX polish and optional onboarding.
+
+---
+
+*LinguAI — built with product sense and learning science in mind.*
