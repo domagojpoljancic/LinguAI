@@ -212,9 +212,12 @@ def _primary_and_widen_topics(display_topic: str | None) -> Tuple[str, List[str]
     """
     Map display box name (e.g. "Street Eats") to normalized topic key, plus widening list.
     For topic-specific requests we do NOT widen (no daily/general) so boxes stay on-topic.
+    "unsupported" returns no topics so retrieval returns 0 words (defensive; box_workflow usually skips retrieval).
     """
     if not display_topic:
         primary = "daily"
+    elif display_topic.strip().lower() == "unsupported":
+        return "unsupported", []
     else:
         name = display_topic.strip().lower()
         if "street" in name or "restaurant" in name or "eat" in name or "menu" in name:

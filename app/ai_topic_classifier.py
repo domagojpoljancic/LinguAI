@@ -15,9 +15,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Internal topic enum. AI must never invent topics outside this set.
+# Internal topic enum. AI returns one of these; "unsupported" means we have no curated vocabulary.
 ALLOWED_TOPICS = frozenset({
-    "restaurant", "travel", "shopping", "business", "health", "dating", "daily", "general",
+    "restaurant", "travel", "shopping", "business", "health", "dating", "daily", "general", "unsupported",
 })
 
 # Map common AI outputs / synonyms to allowed topic. Used when model returns non-enum value.
@@ -47,6 +47,7 @@ TOPIC_NORMALIZE_MAP = {
 def normalize_topic(topic: str | None) -> str:
     """
     Ensure topic is one of ALLOWED_TOPICS. If not, map via TOPIC_NORMALIZE_MAP or return "general".
+    "unsupported" is passed through so retrieval can refuse to return junk.
     """
     if not topic or not isinstance(topic, str):
         return "general"
@@ -75,39 +76,44 @@ def _get_llm():
     )
 
 
-CLASSIFICATION_SYSTEM = """You are a classifier that maps user prompts to a small fixed vocabulary topic set.
+CLASSIFICATION_SYSTEM = """You classify user prompts for a vocabulary-learning app. We have curated word lists only for specific topics.
 
-Allowed topics (return EXACTLY one of these):
-restaurant
-travel
-shopping
-business
-health
-dating
-daily
-general
+Supported topics (we have good vocabulary for these — use one of these when the prompt clearly fits):
+restaurant, travel, shopping, business, health, dating, daily
+
+Use "general" only when the request is vague (e.g. "some words", "vocabulary") and could be served by daily/basics.
+
+Use "unsupported" when the user asks for vocabulary we do NOT have curated lists for, e.g.:
+- sports: football, basketball, tennis, etc.
+- gym / fitness
+- real estate / landlord / renting
+- hobbies we don't support (e.g. knitting, gaming)
+- very niche topics
 
 Return ONLY valid JSON, no other text.
 Schema:
 {
-  "topic": "<one of the allowed topics>",
+  "topic": "<one of: restaurant, travel, shopping, business, health, dating, daily, general, unsupported>",
   "confidence": <number between 0 and 1>,
-  "reason": "<short explanation in one phrase>"
+  "reason": "<short explanation in one phrase>",
+  "topic_keywords": ["<keyword1>", "<keyword2>"],
+  "situation_label": "<short label, e.g. football vocabulary, at the airport, talking to landlord>"
 }
 
 Examples:
-- "words for labor with my wife" -> topic: health, confidence: 0.9, reason: labor and childbirth context
-- "phrases for talking to a midwife" -> topic: health, confidence: 0.95
-- "vocabulary for a medical emergency" -> topic: health, confidence: 0.95
-- "small talk at work" -> topic: business, confidence: 0.85
+- "words for labor with my wife" -> topic: health, confidence: 0.9, topic_keywords: ["labor", "birth", "hospital"], situation_label: "labor and childbirth"
+- "A1 restaurant words in German" -> topic: restaurant, confidence: 0.95, topic_keywords: ["restaurant", "food"], situation_label: "restaurant"
+- "football words in German" -> topic: unsupported, confidence: 0.95, topic_keywords: ["football", "sport"], situation_label: "football vocabulary"
+- "vocabulary for talking to a landlord" -> topic: unsupported, confidence: 0.9, topic_keywords: ["landlord", "rent"], situation_label: "talking to landlord"
+- "phrases for the airport" -> topic: travel, confidence: 0.9, topic_keywords: ["airport", "flight"], situation_label: "at the airport"
 """
 
 
 def classify_with_ai(prompt: str, request_id: str) -> dict[str, Any]:
     """
-    Call LLM to classify prompt into one of ALLOWED_TOPICS.
-    Returns {"topic": str, "confidence": float, "reason": str}.
-    Topic is always normalized to allowed enum.
+    Call LLM to classify prompt into one of ALLOWED_TOPICS with richer metadata.
+    Returns {"topic": str, "confidence": float, "reason": str, "topic_keywords": list, "situation_label": str}.
+    Topic is always normalized to allowed enum (including "unsupported").
     """
     from langchain_core.messages import SystemMessage, HumanMessage
 
@@ -115,6 +121,8 @@ def classify_with_ai(prompt: str, request_id: str) -> dict[str, Any]:
         "topic": "general",
         "confidence": 0.0,
         "reason": "",
+        "topic_keywords": [],
+        "situation_label": "",
     }
     if not (prompt or "").strip():
         return result
@@ -132,7 +140,6 @@ def classify_with_ai(prompt: str, request_id: str) -> dict[str, Any]:
             HumanMessage(content=user_content),
         ])
         raw = (msg.content or "").strip()
-        # Extract JSON (allow markdown code block)
         json_str = raw
         if "```" in raw:
             parts = re.split(r"```(?:json)?\s*", raw)
@@ -144,8 +151,7 @@ def classify_with_ai(prompt: str, request_id: str) -> dict[str, Any]:
         try:
             data = json.loads(json_str)
         except json.JSONDecodeError:
-            # Try to find {...} in raw
-            match = re.search(r"\{[^{}]*\"topic\"[^{}]*\}", raw)
+            match = re.search(r"\{[^{}]*(?:\"[^{}]*\"[^{}]*)*\}", raw)
             if match:
                 try:
                     data = json.loads(match.group(0))
@@ -161,14 +167,21 @@ def classify_with_ai(prompt: str, request_id: str) -> dict[str, Any]:
         if confidence > 1.0:
             confidence = 1.0
         reason = (data.get("reason") or "").strip() or ""
+        kw = data.get("topic_keywords")
+        if isinstance(kw, list):
+            result["topic_keywords"] = [str(x).strip() for x in kw if x][:15]
+        elif isinstance(kw, str) and kw.strip():
+            result["topic_keywords"] = [kw.strip()]
+        situation = (data.get("situation_label") or "").strip() or ""
+        result["situation_label"] = situation[:100] if situation else ""
 
         result["topic"] = normalize_topic(topic)
         result["confidence"] = confidence
         result["reason"] = reason[:200] if reason else ""
 
         logger.info(
-            "ai_topic_classifier.response id=%s topic=%s confidence=%s",
-            request_id, result["topic"], result["confidence"],
+            "ai_topic_classifier.response id=%s topic=%s confidence=%s keywords=%s",
+            request_id, result["topic"], result["confidence"], result["topic_keywords"],
             extra={"request_id": request_id, "topic": result["topic"], "confidence": result["confidence"]},
         )
         return result

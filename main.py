@@ -1,22 +1,28 @@
 """FastAPI server for LinguAI LangGraph backend."""
 
+import hashlib
 import html
 import inspect
+import json
 import logging
 import os
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from app.config import DEBUG
 from app.evaluation_log import log_evaluation_run
 from app.graph import create_graph
+from app.idempotency import get as idempotency_get, set as idempotency_set
 from app.logging_config import setup_logging
 from app.schemas import (
     GenerateBoxesRequest,
     GenerateBoxesResponse,
+    STATUS_GENERATED_PLACEHOLDER,
 )
 from app.state import BoxWorkflowState
 
@@ -32,24 +38,82 @@ graph = None
 
 
 # ---------------------------------------------------------------------------
-# Idempotency (placeholder)
+# Idempotency (customer_id + request_id, payload hash for conflict detection)
 # ---------------------------------------------------------------------------
 
 
-def check_idempotency(request_id: str) -> Optional[GenerateBoxesResponse]:
+def _request_hash(req: GenerateBoxesRequest) -> str:
+    """Canonical hash of request fields that affect the result (prompt, languages, existingBoxes)."""
+    boxes = [b.model_dump(mode="json") for b in req.existingBoxes]
+    boxes.sort(key=lambda x: x.get("boxId", ""))
+    canonical = {
+        "prompt": req.prompt,
+        "defaultLanguage": req.defaultLanguage,
+        "targetLanguage": req.targetLanguage,
+        "existingBoxes": boxes,
+    }
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
+
+
+def _check_idempotency(req: GenerateBoxesRequest) -> Optional[GenerateBoxesResponse]:
     """
-    Placeholder for persistence-backed idempotency.
-    When implemented: lookup request_id in store; if found return cached response, else return None.
+    Look up (customerId, requestId). If miss, return None. If hit with same payload hash,
+    return cached response. If hit with different payload, raise 409 Conflict.
     """
-    # TODO: idempotency store lookup; return cached response if request_id already processed
-    return None
+    stored = idempotency_get(req.customerId, req.requestId)
+    if stored is None:
+        return None
+    stored_hash, response_json = stored
+    current_hash = _request_hash(req)
+    if stored_hash != current_hash:
+        raise HTTPException(
+            status_code=409,
+            detail="Idempotency conflict: this requestId was already used with a different payload for this customer.",
+        )
+    return GenerateBoxesResponse.model_validate_json(response_json)
 
 
 # ---------------------------------------------------------------------------
-# Duplicate strategy (placeholder)
+# Duplicate strategy
 # ---------------------------------------------------------------------------
-# Future duplicate filtering may be by default word only, or by (default, target) pair.
-# No implementation in this step; add filtering here or in a dedicated helper when needed.
+# Duplicate box prevention for the same customer is achieved via idempotency:
+# same (customerId, requestId) + same payload returns the cached response and no new generation.
+# No separate semantic duplicate-detection; idempotency key covers retries and replays.
+
+
+# ---------------------------------------------------------------------------
+# Debug-only: request/response log file (not synced to git; logs/ is in .gitignore)
+# ---------------------------------------------------------------------------
+
+_REQUEST_RESPONSE_LOGGER: Optional[logging.Logger] = None
+
+
+def _setup_request_response_log() -> Optional[logging.Logger]:
+    """When DEBUG is True, add a file handler for request/response logging. Otherwise return None."""
+    if not DEBUG:
+        return None
+    global _REQUEST_RESPONSE_LOGGER
+    if _REQUEST_RESPONSE_LOGGER is not None:
+        return _REQUEST_RESPONSE_LOGGER
+    log_dir = Path(__file__).resolve().parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "request_response.log"
+    _REQUEST_RESPONSE_LOGGER = logging.getLogger("app.request_response")
+    _REQUEST_RESPONSE_LOGGER.setLevel(logging.INFO)
+    _REQUEST_RESPONSE_LOGGER.propagate = False
+    handler = logging.FileHandler(log_file, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    _REQUEST_RESPONSE_LOGGER.addHandler(handler)
+    return _REQUEST_RESPONSE_LOGGER
+
+
+def _log_request_response(kind: str, payload: dict) -> None:
+    """Append one JSON line to the request/response log file (debug only)."""
+    log = _setup_request_response_log()
+    if log is None:
+        return
+    line = json.dumps({"ts": datetime.now(timezone.utc).isoformat(), "type": kind, "body": payload}, ensure_ascii=False)
+    log.info(line)
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +570,8 @@ def _workflow_state_to_response(state: dict) -> GenerateBoxesResponse:
         topicSource=state.get("topic_source") or None,
         topicConfidence=state.get("topic_confidence"),
         topicReason=state.get("topic_reason") or None,
+        topicKeywords=state.get("topic_keywords"),
+        situationLabel=state.get("situation_label") or None,
         reachedBoxCreation=state.get("reached_box_creation") is True,
         candidate_debug=state.get("candidate_debug"),
     )
@@ -532,9 +598,18 @@ def generate_boxes(req: GenerateBoxesRequest) -> GenerateBoxesResponse:
     )
     if DEBUG:
         logger.debug("request_payload requestId=%s body=%s", req.requestId, req.model_dump(mode="json"))
+    _log_request_response("request", req.model_dump(mode="json"))
 
-    cached = check_idempotency(req.requestId)
+    try:
+        cached = _check_idempotency(req)
+    except HTTPException as e:
+        if e.status_code == 409:
+            _log_request_response("response", {"status_code": 409, "detail": str(e.detail)})
+        raise
+
     if cached is not None:
+        logger.info("idempotency_hit customerId=%s requestId=%s", req.customerId, req.requestId)
+        _log_request_response("response", cached.model_dump(mode="json"))
         return cached
 
     try:
@@ -567,10 +642,14 @@ def generate_boxes(req: GenerateBoxesRequest) -> GenerateBoxesResponse:
             resp.reachedBoxCreation,
             debug=DEBUG,
         )
+        if resp.status == STATUS_GENERATED_PLACEHOLDER:
+            request_hash = _request_hash(req)
+            idempotency_set(req.customerId, req.requestId, request_hash, resp.model_dump_json())
+        _log_request_response("response", resp.model_dump(mode="json"))
         return resp
     except Exception:
         logger.exception("generate_boxes workflow failed requestId=%s", req.requestId)
-        return GenerateBoxesResponse(
+        fallback = GenerateBoxesResponse(
             requestId=req.requestId,
             defaultLanguage=req.defaultLanguage,
             targetLanguage=req.targetLanguage,
@@ -579,6 +658,8 @@ def generate_boxes(req: GenerateBoxesRequest) -> GenerateBoxesResponse:
             boxes=[],
             reachedBoxCreation=False,
         )
+        _log_request_response("response", fallback.model_dump(mode="json"))
+        return fallback
 
 
 # ---------------------------------------------------------------------------

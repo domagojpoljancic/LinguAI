@@ -28,6 +28,7 @@ build/
 
 # Logs and local artifacts
 logs/
+logs/request_response.log
 *.log
 PRESERVED_COMMIT*.patch
 .pytest_cache/
@@ -36,6 +37,7 @@ htmlcov/
 
 # Vocabulary DB and ingestion artifacts (runtime/ingestion output)
 data/vocab.db
+data/idempotency.db
 data/*.bak
 data/ingestion_logs/
 # Large Wiktionary dump (download via scripts/download_wiktionary.py)

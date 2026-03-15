@@ -62,6 +62,7 @@ class GeneratedBox(BaseModel):
 STATUS_IRRELEVANT_REQUEST = "irrelevant_request"
 STATUS_INSUFFICIENT_CONFIDENCE = "insufficient_confidence"
 STATUS_GENERATED_PLACEHOLDER = "generated_placeholder"
+STATUS_TOPIC_NOT_SUPPORTED = "topic_not_supported"
 
 
 class GenerateBoxesResponse(BaseModel):
@@ -76,10 +77,12 @@ class GenerateBoxesResponse(BaseModel):
     # Clarify level and topic for app / box-creation step
     level: Optional[str] = None  # CEFR when resolved (explicit or inferred)
     levelSource: Optional[str] = None  # "explicit" | "inferred"
-    topic: Optional[str] = None  # internal topic key (restaurant, travel, health, ...)
+    topic: Optional[str] = None  # internal topic key (restaurant, travel, health, ... | general | unsupported)
     topicSource: Optional[str] = None  # "deterministic" | "ai"
     topicConfidence: Optional[float] = None  # 0–1
     topicReason: Optional[str] = None  # from AI classifier when source=ai
+    topicKeywords: Optional[List[str]] = None  # optional keywords (e.g. ["football"], ["labor"])
+    situationLabel: Optional[str] = None  # short situation (e.g. "football vocabulary")
     reachedBoxCreation: bool = False  # True when workflow reached box-creation placeholder
     # Debug: when DEBUG_BOX_CANDIDATES=1, per-word selection explainability (local only)
     candidate_debug: Optional[List[dict]] = None

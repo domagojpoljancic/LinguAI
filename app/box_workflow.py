@@ -22,6 +22,7 @@ from app.schemas import (
     STATUS_IRRELEVANT_REQUEST,
     STATUS_INSUFFICIENT_CONFIDENCE,
     STATUS_GENERATED_PLACEHOLDER,
+    STATUS_TOPIC_NOT_SUPPORTED,
 )
 from app.vocab_store import retrieve_candidates
 
@@ -52,6 +53,11 @@ TOPIC_TO_BOX_NAME = {
     "daily": "Daily Basics",
 }
 DEFAULT_BOX_NAME = "Quick Start"
+
+# User-facing message when we don't have vocabulary for the requested topic.
+TOPIC_NOT_SUPPORTED_MESSAGE = (
+    "We don't have vocabulary for that topic yet. Try travel, restaurant, business, health, daily basics, or shopping."
+)
 
 # When topic came from AI (natural prompt), we pass topic_reason + these boost words to retrieval
 # so situation-relevant vocabulary ranks first. Used only for ranking; retrieval stays deterministic.
@@ -358,6 +364,9 @@ def topic_identification(state: BoxWorkflowState) -> dict:
     )
 
     if not use_ai:
+        # Richer metadata for deterministic: keywords from matched topic, situation from box name.
+        topic_keywords = TOPIC_KEYWORDS.get(topic_key, [])[:5] if topic_key in TOPIC_KEYWORDS else [topic_key]
+        situation_label = TOPIC_TO_BOX_NAME.get(topic_key, topic_key) or ""
         logger.info(
             "topic_identification.done id=%s topic=%s confidence=%s source=deterministic",
             request_id, topic_key, confidence,
@@ -368,25 +377,31 @@ def topic_identification(state: BoxWorkflowState) -> dict:
             "topic_confidence": confidence,
             "topic_source": "deterministic",
             "topic_reason": "",
+            "topic_keywords": topic_keywords,
+            "situation_label": situation_label,
         }
 
-    # AI fallback: classify natural prompt into allowed topic enum.
+    # AI fallback: richer output (topic, confidence, reason, topic_keywords, situation_label).
     from app.ai_topic_classifier import classify_with_ai, normalize_topic
 
     ai_result = classify_with_ai(prompt, request_id)
     topic_key = normalize_topic(ai_result.get("topic"))
     confidence = float(ai_result.get("confidence", 0.0))
     reason = (ai_result.get("reason") or "").strip()
+    topic_keywords = ai_result.get("topic_keywords") or []
+    situation_label = (ai_result.get("situation_label") or "").strip()
 
     logger.info(
-        "topic_identification.done id=%s topic=%s confidence=%s source=ai reason=%s",
-        request_id, topic_key, confidence, reason[:50] if reason else "",
+        "topic_identification.done id=%s topic=%s confidence=%s source=ai reason=%s keywords=%s",
+        request_id, topic_key, confidence, reason[:50] if reason else "", topic_keywords,
         extra={
             "request_id": request_id,
             "topic": topic_key,
             "topic_confidence": confidence,
             "topic_source": "ai",
             "topic_reason": reason,
+            "topic_keywords": topic_keywords,
+            "situation_label": situation_label,
         },
     )
     return {
@@ -394,6 +409,8 @@ def topic_identification(state: BoxWorkflowState) -> dict:
         "topic_confidence": confidence,
         "topic_source": "ai",
         "topic_reason": reason,
+        "topic_keywords": topic_keywords,
+        "situation_label": situation_label,
     }
 
 
@@ -406,25 +423,54 @@ def _existing_word_pairs(state: BoxWorkflowState) -> List[Tuple[str, str]]:
     return pairs
 
 
+def _build_situation_hint(state: BoxWorkflowState, topic_key: str) -> Optional[str]:
+    """Build situation hint for retrieval ranking from topic_reason, topic_keywords, situation_label, and boost."""
+    parts: List[str] = []
+    reason = (state.get("topic_reason") or "").strip()[:200]
+    if reason:
+        parts.append(reason)
+    keywords = state.get("topic_keywords") or []
+    for kw in keywords[:10]:
+        if kw and isinstance(kw, str):
+            parts.append(kw.strip())
+    situation_label = (state.get("situation_label") or "").strip()[:80]
+    if situation_label:
+        parts.append(situation_label)
+    boost = TOPIC_SITUATION_BOOST.get(topic_key, [])
+    parts.extend(boost[:5])
+    return " ".join(p for p in parts if p) or None
+
+
 def box_creation_placeholder(state: BoxWorkflowState) -> dict:
     """
     First real box generation:
-    - retrieve vocabulary from local SQLite store (deterministic: filter by topic key, level)
-    - filter by language pair, topic, and level
-    - remove duplicates against existing user boxes
-    - return up to 30 word pairs (default -> target) for a single box.
-    Topic is internal key (e.g. restaurant); box display name from TOPIC_TO_BOX_NAME.
+    - Skip retrieval and return topic_not_supported when topic is "unsupported" or general with low confidence.
+    - Otherwise retrieve from SQLite (deterministic: filter by topic key, level); use situation hint for ranking.
+    - Guardrail: if retrieval would return only widened/generic words for an unsupported/general request, return topic_not_supported instead of junk.
     """
     request_id = state.get("request_id", "")
     default_lang = (state.get("default_language") or "").lower()
     target_lang = (state.get("target_language") or "").lower()
     topic_key = state.get("topic") or "general"
+    topic_confidence = float(state.get("topic_confidence") or 0.0)
     level = state.get("level") or None
 
-    # Retrieval uses topic key (vocab_store maps it to primary/widened topics).
+    # Guardrail 1: do not run retrieval for unsupported or vague general — return honest "no" instead of junk.
+    if topic_key == "unsupported" or (topic_key == "general" and topic_confidence < 0.5):
+        logger.info(
+            "box_creation_placeholder.topic_not_supported id=%s topic=%s confidence=%s",
+            request_id, topic_key, topic_confidence,
+            extra={"request_id": request_id, "topic": topic_key, "topic_confidence": topic_confidence},
+        )
+        return {
+            "status": STATUS_TOPIC_NOT_SUPPORTED,
+            "boxes": [],
+            "user_message": TOPIC_NOT_SUPPORTED_MESSAGE,
+            "reached_box_creation": True,
+        }
+
     display_topic_for_retrieval = topic_key
     box_display_name = TOPIC_TO_BOX_NAME.get(topic_key, DEFAULT_BOX_NAME)
-
     existing_pairs = _existing_word_pairs(state)
 
     logger.info(
@@ -443,30 +489,22 @@ def box_creation_placeholder(state: BoxWorkflowState) -> dict:
         },
     )
 
-    words: List[dict]
-    stats: dict
+    words: List[dict] = []
+    stats: dict = {
+        "primary_topic": "",
+        "widened_topics": [],
+        "primary_candidate_count": 0,
+        "widened_candidate_count": 0,
+        "duplicate_count": 0,
+        "final_count": 0,
+        "used_fallback_source": False,
+        "partial": True,
+    }
     candidate_debug: Optional[List[dict]] = None
-    if not default_lang or not target_lang:
-        words = []
-        stats = {
-            "primary_topic": "",
-            "widened_topics": [],
-            "primary_candidate_count": 0,
-            "widened_candidate_count": 0,
-            "duplicate_count": 0,
-            "final_count": 0,
-            "used_fallback_source": False,
-            "partial": True,
-        }
-    else:
+
+    if default_lang and target_lang:
         debug_candidates = os.environ.get("DEBUG_BOX_CANDIDATES") == "1"
-        # When topic was resolved by AI, pass reason + topic boost words so retrieval ranks
-        # situation-relevant words first (deterministic ranking only).
-        situation_hint = None
-        if state.get("topic_source") == "ai" and state.get("topic_reason"):
-            reason = (state.get("topic_reason") or "").strip()[:200]
-            boost = TOPIC_SITUATION_BOOST.get(topic_key, [])
-            situation_hint = " ".join([reason] + boost) if reason or boost else None
+        situation_hint = _build_situation_hint(state, topic_key)
         words, stats, candidate_debug = retrieve_candidates(
             default_lang,
             target_lang,
@@ -479,7 +517,23 @@ def box_creation_placeholder(state: BoxWorkflowState) -> dict:
         )
 
     final_count = stats.get("final_count", len(words))
+    primary_candidate_count = int(stats.get("primary_candidate_count", 0))
     partial = bool(stats.get("partial", final_count < 30))
+
+    # Guardrail 2: if we would return only widened/generic words (no primary-topic match) for general/unsupported, refuse.
+    if topic_key == "general" and primary_candidate_count == 0 and final_count > 0:
+        logger.info(
+            "box_creation_placeholder.guardrail_reject_general_junk id=%s final_count=%s",
+            request_id, final_count,
+            extra={"request_id": request_id, "final_count": final_count},
+        )
+        return {
+            "status": STATUS_TOPIC_NOT_SUPPORTED,
+            "boxes": [],
+            "user_message": TOPIC_NOT_SUPPORTED_MESSAGE,
+            "reached_box_creation": True,
+        }
+
     logger.info(
         "box_creation_placeholder.done id=%s topic=%s level=%s lang_pair=%s-%s primary_candidates=%s widened_candidates=%s duplicates_removed=%s final_items=%s partial=%s used_fallback=%s",
         request_id,
@@ -510,7 +564,6 @@ def box_creation_placeholder(state: BoxWorkflowState) -> dict:
 
     box_name = box_display_name
     box_id = f"generated-{request_id or 'box'}"
-
     boxes = []
     if words:
         boxes.append(
