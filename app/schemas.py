@@ -62,7 +62,8 @@ class GeneratedBox(BaseModel):
 STATUS_IRRELEVANT_REQUEST = "irrelevant_request"
 STATUS_INSUFFICIENT_CONFIDENCE = "insufficient_confidence"
 STATUS_GENERATED_PLACEHOLDER = "generated_placeholder"
-STATUS_TOPIC_NOT_SUPPORTED = "topic_not_supported"
+# Pipeline completed but no words (retry / change topic / check API)
+STATUS_GENERATION_EMPTY = "generation_empty"
 
 
 class GenerateBoxesResponse(BaseModel):

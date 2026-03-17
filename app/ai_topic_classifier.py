@@ -47,11 +47,13 @@ TOPIC_NORMALIZE_MAP = {
 def normalize_topic(topic: str | None) -> str:
     """
     Ensure topic is one of ALLOWED_TOPICS. If not, map via TOPIC_NORMALIZE_MAP or return "general".
-    "unsupported" is passed through so retrieval can refuse to return junk.
+    Maps legacy "unsupported" to general (broad topics use AI; no longer a dead-end).
     """
     if not topic or not isinstance(topic, str):
         return "general"
     raw = topic.strip().lower()
+    if raw == "unsupported":
+        return "general"
     if raw in ALLOWED_TOPICS:
         return raw
     if raw in TOPIC_NORMALIZE_MAP:
@@ -81,19 +83,13 @@ CLASSIFICATION_SYSTEM = """You classify user prompts for a vocabulary-learning a
 Supported topics (we have good vocabulary for these — use one of these when the prompt clearly fits):
 restaurant, travel, shopping, business, health, dating, daily
 
-Use "general" only when the request is vague (e.g. "some words", "vocabulary") and could be served by daily/basics.
-
-Use "unsupported" when the user asks for vocabulary we do NOT have curated lists for, e.g.:
-- sports: football, basketball, tennis, etc.
-- gym / fitness
-- real estate / landlord / renting
-- hobbies we don't support (e.g. knitting, gaming)
-- very niche topics
+Use "general" for vague requests OR for sports, weather, gym, landlord, niche hobbies
+(still set topic_keywords and situation_label so the word-generator can target the theme).
 
 Return ONLY valid JSON, no other text.
 Schema:
 {
-  "topic": "<one of: restaurant, travel, shopping, business, health, dating, daily, general, unsupported>",
+  "topic": "<one of: restaurant, travel, shopping, business, health, dating, daily, general>",
   "confidence": <number between 0 and 1>,
   "reason": "<short explanation in one phrase>",
   "topic_keywords": ["<keyword1>", "<keyword2>"],
@@ -103,8 +99,9 @@ Schema:
 Examples:
 - "words for labor with my wife" -> topic: health, confidence: 0.9, topic_keywords: ["labor", "birth", "hospital"], situation_label: "labor and childbirth"
 - "A1 restaurant words in German" -> topic: restaurant, confidence: 0.95, topic_keywords: ["restaurant", "food"], situation_label: "restaurant"
-- "football words in German" -> topic: unsupported, confidence: 0.95, topic_keywords: ["football", "sport"], situation_label: "football vocabulary"
-- "vocabulary for talking to a landlord" -> topic: unsupported, confidence: 0.9, topic_keywords: ["landlord", "rent"], situation_label: "talking to landlord"
+- "football words in German" -> topic: general, confidence: 0.95, topic_keywords: ["football", "sport"], situation_label: "football vocabulary"
+- "weather in German" -> topic: general, confidence: 0.9, topic_keywords: ["weather", "climate"], situation_label: "weather vocabulary"
+- "vocabulary for talking to a landlord" -> topic: general, confidence: 0.9, topic_keywords: ["landlord", "rent"], situation_label: "talking to landlord"
 - "phrases for the airport" -> topic: travel, confidence: 0.9, topic_keywords: ["airport", "flight"], situation_label: "at the airport"
 """
 

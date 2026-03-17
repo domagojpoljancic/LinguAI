@@ -1,18 +1,16 @@
 """
 Box-generation workflow nodes and routing.
 
-Architecture:
-- relevance_check (LLM)
-- topic_identification (hybrid: deterministic keyword fast-path, AI fallback for natural prompts; outputs internal topic enum only)
-- level_resolution (explicit CEFR in prompt, else LLM infer from boxes/words/completion/topic; always produces a level)
-- box_creation_placeholder (deterministic retrieval by topic key, level, language)
-Words are nested under each box so level inference can use completion and vocabulary per box.
+Flow: relevance → topic → decide_retrieval_route → level → db_retrieval_attempt →
+retrieval_quality_assessment → [optional ai_word_generation] → result_merge_and_filter →
+box_creation_finalize → async_persist_ai_words (persist runs in FastAPI after HTTP response).
 """
 
+import difflib
 import logging
 import os
 import re
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
@@ -22,8 +20,10 @@ from app.schemas import (
     STATUS_IRRELEVANT_REQUEST,
     STATUS_INSUFFICIENT_CONFIDENCE,
     STATUS_GENERATED_PLACEHOLDER,
-    STATUS_TOPIC_NOT_SUPPORTED,
+    STATUS_GENERATION_EMPTY,
 )
+from app.ai_word_generator import generate_word_pairs
+from app.prompts.word_generation import WordGenerationContext
 from app.vocab_store import retrieve_candidates
 
 logger = logging.getLogger(__name__)
@@ -53,11 +53,6 @@ TOPIC_TO_BOX_NAME = {
     "daily": "Daily Basics",
 }
 DEFAULT_BOX_NAME = "Quick Start"
-
-# User-facing message when we don't have vocabulary for the requested topic.
-TOPIC_NOT_SUPPORTED_MESSAGE = (
-    "We don't have vocabulary for that topic yet. Try travel, restaurant, business, health, daily basics, or shopping."
-)
 
 # When topic came from AI (natural prompt), we pass topic_reason + these boost words to retrieval
 # so situation-relevant vocabulary ranks first. Used only for ranking; retrieval stays deterministic.
@@ -329,19 +324,97 @@ TOPIC_DETERMINISTIC_CONFIDENCE_THRESHOLD = 0.7
 # Confidence assigned when deterministic keyword match is found.
 TOPIC_DETERMINISTIC_CONFIDENCE = 0.95
 
+_TOPIC_TYPOS: Dict[str, str] = {
+    "restaruant": "restaurant",
+    "restraunt": "restaurant",
+    "resteraunt": "restaurant",
+    "travle": "travel",
+    "travvel": "travel",
+    "busines": "business",
+    "buisness": "business",
+}
+
+_AI_LANG_CODES = frozenset({"en", "de", "es", "fr", "it", "pt", "nl", "pl"})
+
+_LANG_ALIASES: Dict[str, str] = {
+    "english": "en",
+    "german": "de",
+    "deutsch": "de",
+    "spanish": "es",
+    "español": "es",
+    "espanol": "es",
+    "french": "fr",
+    "français": "fr",
+    "francais": "fr",
+    "italian": "it",
+    "portuguese": "pt",
+    "dutch": "nl",
+    "polish": "pl",
+}
+
+
+def _canonical_lang(code: Optional[str]) -> str:
+    if not code or not str(code).strip():
+        return ""
+    s = str(code).strip().lower().replace("_", "-")
+    if s in _LANG_ALIASES:
+        return _LANG_ALIASES[s]
+    if len(s) == 2 and s.isalpha():
+        return s
+    if "-" in s:
+        s = s.split("-")[0][:2]
+    return s[:2] if len(s) >= 2 and s[:2].isalpha() else ""
+
+
+def _resolve_language_pair(state: BoxWorkflowState) -> Tuple[str, str]:
+    d = _canonical_lang(state.get("default_language"))
+    t = _canonical_lang(state.get("target_language"))
+    pl = (state.get("prompt") or "").lower()
+    if not d and t:
+        d = "en" if t != "en" else "de"
+    elif d and not t:
+        t = "de" if d == "en" else ("en" if d in ("de", "es", "fr", "it") else "en")
+    elif not d and not t:
+        if "german" in pl or "deutsch" in pl:
+            d, t = "en", "de"
+        elif "spanish" in pl or "español" in pl or "espanol" in pl:
+            d, t = "en", "es"
+        else:
+            d, t = "en", "de"
+    if d == t and d:
+        t = "de" if d == "en" else "en"
+    return d, t
+
+
+def _normalize_topic_typos(prompt: str) -> str:
+    if not prompt:
+        return ""
+    s = prompt.lower()
+    for bad, good in _TOPIC_TYPOS.items():
+        s = re.sub(rf"\b{re.escape(bad)}\b", good, s)
+    return s
+
 
 def _identify_topic_deterministic(prompt: str) -> Tuple[str, float]:
-    """
-    Extract topic key from prompt using keyword matching (fast path).
-    Returns (topic_key, confidence). topic_key is from internal enum; confidence 0.95 if match else 0.0.
-    """
+    """Keyword match + typo fixes + fuzzy token match vs topic keywords."""
     if not prompt:
         return "general", 0.0
-    lower = prompt.lower()
+    lower = _normalize_topic_typos(prompt)
     tokens = set(re.split(r"\W+", lower))
     for label, keywords in TOPIC_KEYWORDS.items():
         if any(kw in lower or kw in tokens for kw in keywords):
             return label, TOPIC_DETERMINISTIC_CONFIDENCE
+    long_tokens = [w for w in re.findall(r"[a-z]{4,}", lower) if len(w) >= 4]
+    for label, keywords in TOPIC_KEYWORDS.items():
+        for kw in keywords:
+            if len(kw) < 4:
+                continue
+            for tok in long_tokens:
+                if tok == kw:
+                    return label, TOPIC_DETERMINISTIC_CONFIDENCE
+                if len(tok) >= 5 and len(kw) >= 5:
+                    if difflib.SequenceMatcher(None, tok, kw).ratio() >= 0.86:
+                        return label, 0.88
     return "general", 0.0
 
 
@@ -354,6 +427,7 @@ def topic_identification(state: BoxWorkflowState) -> dict:
     """
     request_id = state.get("request_id", "")
     prompt = (state.get("prompt") or "").strip()
+    d_lang, t_lang = _resolve_language_pair(state)
     logger.info("topic_identification.start id=%s", request_id, extra={"request_id": request_id})
 
     topic_key, confidence = _identify_topic_deterministic(prompt)
@@ -364,7 +438,6 @@ def topic_identification(state: BoxWorkflowState) -> dict:
     )
 
     if not use_ai:
-        # Richer metadata for deterministic: keywords from matched topic, situation from box name.
         topic_keywords = TOPIC_KEYWORDS.get(topic_key, [])[:5] if topic_key in TOPIC_KEYWORDS else [topic_key]
         situation_label = TOPIC_TO_BOX_NAME.get(topic_key, topic_key) or ""
         logger.info(
@@ -373,6 +446,8 @@ def topic_identification(state: BoxWorkflowState) -> dict:
             extra={"request_id": request_id, "topic": topic_key, "topic_confidence": confidence, "topic_source": "deterministic"},
         )
         return {
+            "default_language": d_lang,
+            "target_language": t_lang,
             "topic": topic_key,
             "topic_confidence": confidence,
             "topic_source": "deterministic",
@@ -381,15 +456,21 @@ def topic_identification(state: BoxWorkflowState) -> dict:
             "situation_label": situation_label,
         }
 
-    # AI fallback: richer output (topic, confidence, reason, topic_keywords, situation_label).
     from app.ai_topic_classifier import classify_with_ai, normalize_topic
 
     ai_result = classify_with_ai(prompt, request_id)
     topic_key = normalize_topic(ai_result.get("topic"))
-    confidence = float(ai_result.get("confidence", 0.0))
+    try:
+        confidence = float(ai_result.get("confidence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.5
     reason = (ai_result.get("reason") or "").strip()
     topic_keywords = ai_result.get("topic_keywords") or []
+    if not isinstance(topic_keywords, list):
+        topic_keywords = []
     situation_label = (ai_result.get("situation_label") or "").strip()
+    if isinstance(situation_label, str) and len(situation_label) > 100:
+        situation_label = situation_label[:100]
 
     logger.info(
         "topic_identification.done id=%s topic=%s confidence=%s source=ai reason=%s keywords=%s",
@@ -405,12 +486,85 @@ def topic_identification(state: BoxWorkflowState) -> dict:
         },
     )
     return {
+        "default_language": d_lang,
+        "target_language": t_lang,
         "topic": topic_key,
         "topic_confidence": confidence,
         "topic_source": "ai",
         "topic_reason": reason,
         "topic_keywords": topic_keywords,
         "situation_label": situation_label,
+    }
+
+
+def decide_retrieval_route(state: BoxWorkflowState) -> dict:
+    """Decide whether to use DB, AI, or mixed retrieval based on topic and prompt context.
+
+    Returns keys:
+      - retrieval_route: "db_first" | "ai_first" | "mixed"
+      - retrieval_route_reason: short explanation
+      - retrieval_route_confidence: 0–1
+    """
+    request_id = state.get("request_id", "")
+    topic = (state.get("topic") or "").strip().lower() or "general"
+    topic_conf = float(state.get("topic_confidence") or 0.0)
+    topic_keywords = state.get("topic_keywords") or []
+    situation_label = (state.get("situation_label") or "").strip().lower()
+    prompt = (state.get("prompt") or "").strip().lower()
+
+    supported_topics = {"restaurant", "travel", "shopping", "business", "health", "dating", "daily"}
+
+    def has_any(words: list[str]) -> bool:
+        return any(w in prompt for w in words)
+
+    sports_words = ["football", "soccer", "basketball", "tennis", "sport", "gym", "fitness"]
+    landlord_words = ["landlord", "rent", "tenant", "lease"]
+    weather_words = [
+        "weather", "climate", "rain", "snow", "storm", "temperature", "forecast",
+        "cloudy", "sunny", "wind", "humid", "drizzle",
+    ]
+    niche_vocab = sports_words + landlord_words + weather_words
+
+    keywords_lower = [str(k).strip().lower() for k in topic_keywords]
+    kw_set = set(k for k in keywords_lower if k)
+
+    route = "mixed"
+    reason = "default mixed routing"
+    confidence = 0.5
+
+    # 1. Strong, known topic -> db_first
+    if topic in supported_topics and topic_conf >= 0.7:
+        route = "db_first"
+        reason = f"strong supported topic: {topic} (topic_confidence={topic_conf:.2f})"
+        confidence = min(1.0, 0.8 + topic_conf / 5.0)
+    # 2. Niche / broad topics: prefer AI-first (sports, weather, landlord, gym, etc.)
+    elif (
+        topic == "unsupported"
+        or has_any(niche_vocab)
+        or bool(kw_set.intersection(niche_vocab))
+    ):
+        route = "ai_first"
+        reason = "broad or niche topic (sports, weather, gym, landlord, etc.) — AI-first"
+        confidence = 0.85
+    # 3. Vague but language-relevant -> mixed
+    else:
+        route = "mixed"
+        reason = f"vague or general topic ({topic}) with topic_confidence={topic_conf:.2f}"
+        confidence = 0.6 if topic_conf < 0.4 else 0.7
+
+    logger.info(
+        "decide_retrieval_route.done id=%s topic=%s route=%s conf=%s reason=%s",
+        request_id, topic, route, confidence, reason,
+        extra={
+            "request_id": request_id,
+            "retrieval_route": route,
+            "retrieval_route_confidence": confidence,
+        },
+    )
+    return {
+        "retrieval_route": route,
+        "retrieval_route_reason": reason,
+        "retrieval_route_confidence": confidence,
     }
 
 
@@ -421,6 +575,21 @@ def _existing_word_pairs(state: BoxWorkflowState) -> List[Tuple[str, str]]:
         for w in box.get("words") or []:
             pairs.append((w.get("default") or "", w.get("target") or ""))
     return pairs
+
+
+TARGET_MIN_STRONG_WORDS = 20
+MAX_BOX_WORDS = 30
+
+
+def _ai_lang_pair_allowed(state: BoxWorkflowState) -> bool:
+    """OpenAI word-pair gen for distinct languages in _AI_LANG_CODES (en, de, es, fr, it, …)."""
+    d = _canonical_lang(state.get("default_language"))
+    t = _canonical_lang(state.get("target_language"))
+    return bool(d and t and d != t and d in _AI_LANG_CODES and t in _AI_LANG_CODES)
+
+
+def _norm_pair(d: str, t: str) -> Tuple[str, str]:
+    return ((d or "").strip().lower(), (t or "").strip().lower())
 
 
 def _build_situation_hint(state: BoxWorkflowState, topic_key: str) -> Optional[str]:
@@ -441,148 +610,348 @@ def _build_situation_hint(state: BoxWorkflowState, topic_key: str) -> Optional[s
     return " ".join(p for p in parts if p) or None
 
 
-def box_creation_placeholder(state: BoxWorkflowState) -> dict:
+def db_retrieval_attempt(state: BoxWorkflowState) -> dict:
     """
-    First real box generation:
-    - Skip retrieval and return topic_not_supported when topic is "unsupported" or general with low confidence.
-    - Otherwise retrieve from SQLite (deterministic: filter by topic key, level); use situation hint for ranking.
-    - Guardrail: if retrieval would return only widened/generic words for an unsupported/general request, return topic_not_supported instead of junk.
+    Load vocabulary candidates from SQLite by topic, level, language pair.
+    Produces _db_entries (default/target/phase) and db_candidate_count (pool size).
     """
     request_id = state.get("request_id", "")
-    default_lang = (state.get("default_language") or "").lower()
-    target_lang = (state.get("target_language") or "").lower()
+    default_lang, target_lang = _resolve_language_pair(state)
     topic_key = state.get("topic") or "general"
-    topic_confidence = float(state.get("topic_confidence") or 0.0)
     level = state.get("level") or None
-
-    # Guardrail 1: do not run retrieval for unsupported or vague general — return honest "no" instead of junk.
-    if topic_key == "unsupported" or (topic_key == "general" and topic_confidence < 0.5):
-        logger.info(
-            "box_creation_placeholder.topic_not_supported id=%s topic=%s confidence=%s",
-            request_id, topic_key, topic_confidence,
-            extra={"request_id": request_id, "topic": topic_key, "topic_confidence": topic_confidence},
-        )
-        return {
-            "status": STATUS_TOPIC_NOT_SUPPORTED,
-            "boxes": [],
-            "user_message": TOPIC_NOT_SUPPORTED_MESSAGE,
-            "reached_box_creation": True,
-        }
-
-    display_topic_for_retrieval = topic_key
-    box_display_name = TOPIC_TO_BOX_NAME.get(topic_key, DEFAULT_BOX_NAME)
     existing_pairs = _existing_word_pairs(state)
 
     logger.info(
-        "box_creation_placeholder.start id=%s topic=%s level=%s lang_pair=%s-%s",
-        request_id,
-        topic_key or "(none)",
-        level or "(unknown)",
-        default_lang or "(none)",
-        target_lang or "(none)",
-        extra={
-            "request_id": request_id,
-            "topic": topic_key,
-            "level": level,
-            "default_language": default_lang,
-            "target_language": target_lang,
-        },
+        "db_retrieval_attempt.start id=%s topic=%s lang=%s-%s",
+        request_id, topic_key, default_lang, target_lang,
+        extra={"request_id": request_id},
     )
 
-    words: List[dict] = []
-    stats: dict = {
-        "primary_topic": "",
-        "widened_topics": [],
+    stats: Dict[str, Any] = {
         "primary_candidate_count": 0,
         "widened_candidate_count": 0,
-        "duplicate_count": 0,
         "final_count": 0,
-        "used_fallback_source": False,
-        "partial": True,
     }
-    candidate_debug: Optional[List[dict]] = None
+    entries: List[Dict[str, str]] = []
 
-    if default_lang and target_lang:
-        debug_candidates = os.environ.get("DEBUG_BOX_CANDIDATES") == "1"
+    if default_lang and target_lang and default_lang != target_lang:
         situation_hint = _build_situation_hint(state, topic_key)
-        words, stats, candidate_debug = retrieve_candidates(
+        words, stats, _, phases = retrieve_candidates(
             default_lang,
             target_lang,
-            display_topic=display_topic_for_retrieval,
+            display_topic=topic_key,
             level=level,
             existing_words=existing_pairs,
-            max_items=30,
-            include_debug=debug_candidates,
+            max_items=MAX_BOX_WORDS,
+            include_debug=False,
             situation_hint=situation_hint,
         )
+        for i, w in enumerate(words):
+            ph = phases[i] if i < len(phases) else "widened"
+            entries.append({
+                "default": w["default"],
+                "target": w["target"],
+                "phase": ph,
+            })
 
-    final_count = stats.get("final_count", len(words))
-    primary_candidate_count = int(stats.get("primary_candidate_count", 0))
-    partial = bool(stats.get("partial", final_count < 30))
-
-    # Guardrail 2: if we would return only widened/generic words (no primary-topic match) for general/unsupported, refuse.
-    if topic_key == "general" and primary_candidate_count == 0 and final_count > 0:
-        logger.info(
-            "box_creation_placeholder.guardrail_reject_general_junk id=%s final_count=%s",
-            request_id, final_count,
-            extra={"request_id": request_id, "final_count": final_count},
-        )
-        return {
-            "status": STATUS_TOPIC_NOT_SUPPORTED,
-            "boxes": [],
-            "user_message": TOPIC_NOT_SUPPORTED_MESSAGE,
-            "reached_box_creation": True,
-        }
-
-    logger.info(
-        "box_creation_placeholder.done id=%s topic=%s level=%s lang_pair=%s-%s primary_candidates=%s widened_candidates=%s duplicates_removed=%s final_items=%s partial=%s used_fallback=%s",
-        request_id,
-        topic_key or "(none)",
-        level or "(unknown)",
-        default_lang or "(none)",
-        target_lang or "(none)",
-        stats.get("primary_candidate_count"),
-        stats.get("widened_candidate_count"),
-        stats.get("duplicate_count"),
-        final_count,
-        partial,
-        stats.get("used_fallback_source"),
-        extra={
-            "request_id": request_id,
-            "topic": topic_key,
-            "level": level,
-            "default_language": default_lang,
-            "target_language": target_lang,
-            "primary_candidate_count": stats.get("primary_candidate_count"),
-            "widened_candidate_count": stats.get("widened_candidate_count"),
-            "duplicate_count": stats.get("duplicate_count"),
-            "final_items": final_count,
-            "partial": partial,
-            "used_fallback_source": stats.get("used_fallback_source"),
-        },
+    db_candidate_count = int(stats.get("primary_candidate_count") or 0) + int(
+        stats.get("widened_candidate_count") or 0
     )
-
-    box_name = box_display_name
-    box_id = f"generated-{request_id or 'box'}"
-    boxes = []
-    if words:
-        boxes.append(
-            {
-                "boxId": box_id,
-                "boxName": box_name,
-                "words": words,
-            }
-        )
-
-    out: dict = {
-        "status": STATUS_GENERATED_PLACEHOLDER,
-        "boxes": boxes,
-        "user_message": "Ready to review a vocabulary box.",
-        "reached_box_creation": True,
+    return {
+        "_db_entries": entries,
+        "_db_stats": stats,
+        "db_candidate_count": db_candidate_count,
     }
+
+
+def retrieval_quality_assessment(state: BoxWorkflowState) -> dict:
+    """Count strong (primary-topic) DB rows in retrieved set for routing thresholds."""
+    entries = state.get("_db_entries") or []
+    strong = sum(1 for e in entries if (e.get("phase") or "") == "primary")
+    return {"db_strong_candidate_count": strong}
+
+
+def route_after_retrieval_quality(state: BoxWorkflowState) -> str:
+    """Skip AI when lang pair disallowed or db_first already has enough strong DB words."""
+    if not _ai_lang_pair_allowed(state):
+        return "result_merge_and_filter"
+    route = (state.get("retrieval_route") or "mixed").lower()
+    strong = int(state.get("db_strong_candidate_count") or 0)
+    if route == "db_first" and strong >= TARGET_MIN_STRONG_WORDS:
+        return "result_merge_and_filter"
+    return "ai_word_generation"
+
+
+def ai_word_generation(state: BoxWorkflowState) -> dict:
+    """
+    OpenAI structured word pairs (single-word), validated. Interactive timeout via WORD_GEN_TIMEOUT (default 18s).
+    """
+    request_id = state.get("request_id", "")
+    existing_pairs = _existing_word_pairs(state)
+    avoid = []
+    for box in state.get("existing_boxes") or []:
+        for w in box.get("words") or []:
+            d = (w.get("default") or "").strip()
+            if d:
+                avoid.append(d)
+
+    dl, tl = _resolve_language_pair(state)
+    ctx = WordGenerationContext(
+        user_prompt=state.get("prompt") or "",
+        default_language=dl,
+        target_language=tl,
+        level=(state.get("level") or "A2"),
+        topic=(state.get("topic") or "general"),
+        topic_keywords=list(state.get("topic_keywords") or []),
+        situation_label=(state.get("situation_label") or ""),
+        topic_reason=(state.get("topic_reason") or ""),
+        retrieval_route=(state.get("retrieval_route") or "mixed"),
+        existing_default_words=avoid,
+        existing_word_pairs=existing_pairs,
+        max_pairs=32,
+    )
+    result = generate_word_pairs(ctx, request_id)
+    validated = [
+        {"default": v.default, "target": v.target, "confidence": v.confidence}
+        for v in result.validated
+    ]
+    patch = result.to_state_patch()
+    return {
+        "_ai_generation_attempted": True,
+        "_ai_validated": validated,
+        **patch,
+    }
+
+
+def _merge_results(state: BoxWorkflowState) -> Tuple[List[Dict[str, Any]], str, bool, bool]:
+    """
+    Returns (final_rows with source tag, strategy, db_fallback_used, ai_supplement_used).
+    """
+    route = (state.get("retrieval_route") or "mixed").lower()
+    entries = list(state.get("_db_entries") or [])
+    ai_attempted = bool(state.get("_ai_generation_attempted"))
+    raw_ai = state.get("_ai_validated") or []
+    ai_items: List[Dict[str, Any]] = [
+        {"default": x["default"], "target": x["target"], "confidence": float(x.get("confidence", 0.8))}
+        for x in raw_ai
+        if isinstance(x, dict) and x.get("default") and x.get("target")
+    ]
+    ai_allowed = _ai_lang_pair_allowed(state)
+    strong = int(state.get("db_strong_candidate_count") or 0)
+    has_ai = len(ai_items) > 0
+    ai_failed = ai_attempted and not has_ai
+
+    def db_primary_first() -> List[Dict[str, str]]:
+        primary = [e for e in entries if e.get("phase") == "primary"]
+        widened = [e for e in entries if e.get("phase") != "primary"]
+        return primary + widened
+
+    db_fallback = False
+    ai_supp = False
+    out: List[Dict[str, Any]] = []
+    seen: Set[Tuple[str, str]] = set()
+
+    def add_row(d: str, t: str, source: str) -> None:
+        k = _norm_pair(d, t)
+        if k[0] == "" or k[1] == "" or k in seen:
+            return
+        seen.add(k)
+        out.append({"default": d.strip(), "target": t.strip(), "source": source})
+        if source == "ai":
+            nonlocal ai_supp
+            ai_supp = True
+
+    strategy = "unknown"
+
+    if route == "db_first":
+        if strong >= TARGET_MIN_STRONG_WORDS:
+            for e in db_primary_first():
+                if len(out) >= MAX_BOX_WORDS:
+                    break
+                add_row(e["default"], e["target"], "db_primary" if e.get("phase") == "primary" else "db_widened")
+            strategy = "db_only_sufficient"
+        elif ai_allowed and has_ai:
+            for e in db_primary_first():
+                if len(out) >= MAX_BOX_WORDS:
+                    break
+                add_row(e["default"], e["target"], "db_primary" if e.get("phase") == "primary" else "db_widened")
+            for a in sorted(ai_items, key=lambda x: -x["confidence"]):
+                if len(out) >= MAX_BOX_WORDS:
+                    break
+                add_row(a["default"], a["target"], "ai")
+            strategy = "db_first_ai_topup"
+        elif ai_allowed and ai_failed:
+            for e in db_primary_first():
+                if len(out) >= MAX_BOX_WORDS:
+                    break
+                add_row(e["default"], e["target"], "db_primary" if e.get("phase") == "primary" else "db_widened")
+            strategy = "db_first_ai_failed_db_only"
+            db_fallback = True
+        else:
+            for e in db_primary_first():
+                if len(out) >= MAX_BOX_WORDS:
+                    break
+                add_row(e["default"], e["target"], "db_primary" if e.get("phase") == "primary" else "db_widened")
+            strategy = "db_first_no_ai_lang_or_skipped"
+
+    elif route == "ai_first":
+        if not ai_allowed or not ai_attempted:
+            db_fallback = True
+            for e in db_primary_first():
+                if len(out) >= MAX_BOX_WORDS:
+                    break
+                add_row(e["default"], e["target"], "db_primary" if e.get("phase") == "primary" else "db_widened")
+            strategy = "ai_first_db_only_lang_or_no_attempt"
+        elif ai_failed:
+            db_fallback = True
+            for e in db_primary_first():
+                if len(out) >= MAX_BOX_WORDS:
+                    break
+                add_row(e["default"], e["target"], "db_primary" if e.get("phase") == "primary" else "db_widened")
+            strategy = "ai_first_api_fail_db_fallback"
+        elif len(ai_items) >= TARGET_MIN_STRONG_WORDS:
+            for a in sorted(ai_items, key=lambda x: -x["confidence"]):
+                if len(out) >= MAX_BOX_WORDS:
+                    break
+                add_row(a["default"], a["target"], "ai")
+            strategy = "ai_first_sufficient"
+        else:
+            for a in sorted(ai_items, key=lambda x: -x["confidence"]):
+                add_row(a["default"], a["target"], "ai")
+            for e in db_primary_first():
+                if len(out) >= MAX_BOX_WORDS:
+                    break
+                add_row(e["default"], e["target"], "db_primary" if e.get("phase") == "primary" else "db_widened")
+            strategy = "ai_first_partial_db_fill"
+
+    else:  # mixed
+        if not ai_allowed or not ai_attempted:
+            for e in db_primary_first():
+                if len(out) >= MAX_BOX_WORDS:
+                    break
+                add_row(e["default"], e["target"], "db_primary" if e.get("phase") == "primary" else "db_widened")
+            strategy = "mixed_degraded_db_only_lang" if not ai_allowed else "mixed_no_ai_branch"
+        else:
+            for e in entries:
+                if e.get("phase") != "primary":
+                    continue
+                if len(out) >= MAX_BOX_WORDS:
+                    break
+                add_row(e["default"], e["target"], "db_primary")
+            for e in entries:
+                if e.get("phase") == "primary":
+                    continue
+                if len(out) >= MAX_BOX_WORDS:
+                    break
+                add_row(e["default"], e["target"], "db_widened")
+            for a in sorted(ai_items, key=lambda x: -x["confidence"]):
+                if len(out) >= MAX_BOX_WORDS:
+                    break
+                add_row(a["default"], a["target"], "ai")
+            strategy = "mixed_db_then_ai_ranked"
+            if ai_failed:
+                db_fallback = True
+            if has_ai:
+                ai_supp = True
+
+    return out, strategy, db_fallback, ai_supp
+
+
+def result_merge_and_filter(state: BoxWorkflowState) -> dict:
+    """
+    DB-first / AI-first / mixed merge, dedupe, prefer DB on ties. Target up to 30 words.
+    """
+    request_id = state.get("request_id", "")
+    final_rows, strategy, db_fb, ai_supp = _merge_results(state)
+    logger.info(
+        "result_merge_and_filter id=%s strategy=%s final_n=%s db_fallback=%s ai_supp=%s",
+        request_id, strategy, len(final_rows), db_fb, ai_supp,
+        extra={"request_id": request_id, "final_mix_strategy": strategy},
+    )
+    return {
+        "_final_merged_rows": final_rows,
+        "final_candidate_count": len(final_rows),
+        "final_mix_strategy": strategy,
+        "db_fallback_used": db_fb,
+        "ai_supplement_used": ai_supp,
+        "ai_used": ai_supp or (state.get("ai_used") is True),
+    }
+
+
+def _box_display_name(state: BoxWorkflowState, topic_key: str) -> str:
+    sl = (state.get("situation_label") or "").strip()
+    if sl and 3 <= len(sl) <= 48 and topic_key in ("general", "daily"):
+        return sl[0].upper() + sl[1:] if len(sl) > 1 else sl.upper()
+    return TOPIC_TO_BOX_NAME.get(topic_key, DEFAULT_BOX_NAME)
+
+
+def box_creation_finalize(state: BoxWorkflowState) -> dict:
+    """Build response box from merged words; queue AI pairs for post-response persistence."""
+    request_id = state.get("request_id", "")
+    topic_key = state.get("topic") or "general"
+    box_display_name = _box_display_name(state, topic_key)
+    rows = state.get("_final_merged_rows") or []
+    words = [{"default": r["default"], "target": r["target"]} for r in rows]
+    persist = [
+        {"default": r["default"], "target": r["target"]}
+        for r in rows
+        if r.get("source") == "ai"
+    ]
+    box_id = f"generated-{request_id or 'box'}"
+    boxes: List[dict] = []
+    if words:
+        boxes.append({"boxId": box_id, "boxName": box_display_name, "words": words})
+
+    debug_candidates = os.environ.get("DEBUG_BOX_CANDIDATES") == "1"
+    candidate_debug = None
+    if debug_candidates and rows:
+        candidate_debug = [
+            {
+                "default": r["default"],
+                "target": r["target"],
+                "selection_reason": r.get("source", ""),
+            }
+            for r in rows
+        ]
+
+    if not words:
+        logger.warning(
+            "box_creation_finalize.empty id=%s topic=%s strategy=%s",
+            request_id,
+            topic_key,
+            state.get("final_mix_strategy"),
+            extra={"request_id": request_id},
+        )
+        out = {
+            "status": STATUS_GENERATION_EMPTY,
+            "boxes": [],
+            "user_message": (
+                "We couldn't build a vocabulary list this time. "
+                "Check your connection, confirm your language pair is supported, or try rephrasing — then tap try again."
+            ),
+            "reached_box_creation": True,
+            "persist_ai_fallback_pairs": [],
+        }
+    else:
+        out = {
+            "status": STATUS_GENERATED_PLACEHOLDER,
+            "boxes": boxes,
+            "user_message": "Ready to review a vocabulary box.",
+            "reached_box_creation": True,
+            "persist_ai_fallback_pairs": persist,
+        }
     if candidate_debug is not None:
         out["candidate_debug"] = candidate_debug
     return out
+
+
+def async_persist_ai_words(state: BoxWorkflowState) -> dict:
+    """
+    Graph boundary for post-response work: FastAPI BackgroundTasks persist persist_ai_fallback_pairs
+    after the HTTP response (see main.generate_boxes). This node does not write to DB.
+    """
+    n = len(state.get("persist_ai_fallback_pairs") or [])
+    return {"async_persist_queued": n > 0}
 
 
 # ---- Routers for conditional edges ----

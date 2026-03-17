@@ -16,7 +16,7 @@ VOCAB_SCHEMA_VERSION = 1
 
 # Valid CEFR levels and source_type for validation
 CEFR_LEVELS = ("A1", "A2", "B1", "B2", "C1", "C2")
-SOURCE_TYPES = ("primary", "fallback", "seed", "cefr", "wiktionary")
+SOURCE_TYPES = ("primary", "fallback", "seed", "cefr", "wiktionary", "ai_fallback")
 
 # Default DB path (overridable by VOCAB_DB_PATH)
 def default_db_path() -> Path:
@@ -36,7 +36,7 @@ def create_table_sql() -> str:
         topic          TEXT,
         tags           TEXT,
         score          REAL NOT NULL DEFAULT 1.0,
-        source_type    TEXT NOT NULL DEFAULT 'primary' CHECK (source_type IN ('primary','fallback','seed','cefr','wiktionary')),
+        source_type    TEXT NOT NULL DEFAULT 'primary' CHECK (source_type IN ('primary','fallback','seed','cefr','wiktionary','ai_fallback')),
         source_id      TEXT,
         created_at     TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
         updated_at     TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
@@ -107,11 +107,52 @@ def ensure_schema_version(conn) -> None:
         except Exception:
             pass  # column already exists
     conn.executescript(schema_version_table_sql() + unique_index_sql() + retrieval_indexes_sql())
+    _migrate_vocab_ai_fallback_source_type(conn)
     conn.execute(
         "INSERT OR REPLACE INTO _vocab_schema (key, value) VALUES (?, ?)",
         ("version", str(VOCAB_SCHEMA_VERSION)),
     )
     conn.commit()
+
+
+def _migrate_vocab_ai_fallback_source_type(conn) -> None:
+    """Expand source_type CHECK to allow ai_fallback (SQLite table rebuild)."""
+    cur = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='vocab_entries'")
+    row = cur.fetchone()
+    if not row or not row[0] or "ai_fallback" in row[0]:
+        return
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.executescript("DROP TABLE IF EXISTS _vocab_entries_mig;")
+        conn.executescript(
+            """
+            CREATE TABLE _vocab_entries_mig (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_language TEXT NOT NULL,
+                target_language TEXT NOT NULL,
+                default_text   TEXT NOT NULL,
+                target_text    TEXT NOT NULL,
+                level          TEXT CHECK (level IS NULL OR level IN ('A1','A2','B1','B2','C1','C2')),
+                topic          TEXT,
+                tags           TEXT,
+                score          REAL NOT NULL DEFAULT 1.0,
+                source_type    TEXT NOT NULL DEFAULT 'primary'
+                    CHECK (source_type IN ('primary','fallback','seed','cefr','wiktionary','ai_fallback')),
+                source_id      TEXT,
+                created_at     TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                updated_at     TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+            );
+            INSERT INTO _vocab_entries_mig SELECT * FROM vocab_entries;
+            DROP TABLE vocab_entries;
+            ALTER TABLE _vocab_entries_mig RENAME TO vocab_entries;
+            """
+        )
+        conn.executescript(unique_index_sql() + retrieval_indexes_sql())
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger = __import__("logging").getLogger(__name__)
+        logger.warning("vocab_schema: ai_fallback migration skipped or failed; AI persist may use fallback tag only")
 
 
 def describe_schema() -> str:
@@ -126,7 +167,7 @@ def describe_schema() -> str:
   topic          TEXT,
   tags           TEXT,
   score          REAL NOT NULL DEFAULT 1.0,
-  source_type    TEXT NOT NULL CHECK (source_type IN ('primary','fallback','seed','cefr','wiktionary')),
+  source_type    TEXT NOT NULL CHECK (source_type IN ('primary','fallback','seed','cefr','wiktionary','ai_fallback')),
   source_id      TEXT,
   created_at     TEXT,
   updated_at     TEXT

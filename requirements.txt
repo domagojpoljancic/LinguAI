@@ -1,6 +1,7 @@
 langgraph
 langchain
 langchain-openai
+openai>=1.50.0
 fastapi
 uvicorn
 python-dotenv

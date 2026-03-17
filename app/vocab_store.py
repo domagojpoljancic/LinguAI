@@ -266,7 +266,7 @@ def retrieve_candidates(
     max_items: int = 30,
     include_debug: bool = False,
     situation_hint: str | None = None,
-) -> Tuple[List[Dict[str, str]], Dict[str, object], Optional[List[Dict[str, object]]]]:
+) -> Tuple[List[Dict[str, str]], Dict[str, object], Optional[List[Dict[str, object]]], List[str]]:
     """
     Retrieve up to max_items vocabulary pairs for a box.
 
@@ -278,7 +278,8 @@ def retrieve_candidates(
     - removes duplicates against existing boxes
     - widens topic and uses fallback entries when needed
 
-    When include_debug=True, returns (words, stats, debug_list) with one debug dict per word.
+    When include_debug=True, returns (words, stats, debug_list, phases) with one debug dict per word.
+    phases[i] is \"primary\" or \"widened\" for words[i] (DB quality signal).
     """
     conn = _ensure_conn()
     max_items = max(1, min(max_items, 30))
@@ -375,6 +376,7 @@ def retrieve_candidates(
     final_pairs = sorted(all_selected, key=_rank_key)
 
     words = [{"default": r["default_text"], "target": r["target_text"]} for r, _ in final_pairs]
+    phases = [str(phase) for _, phase in final_pairs]
     stats: Dict[str, object] = {
         "primary_topic": primary_topic,
         "widened_topics": widened_topics,
@@ -405,7 +407,66 @@ def retrieve_candidates(
                 "from_widened": from_widened,
                 "selection_reason": reason,
             })
-    return words, stats, debug_list
+    return words, stats, debug_list, phases
+
+
+def persist_ai_fallback_pairs(
+    source_language: str,
+    target_language: str,
+    pairs: List[Tuple[str, str]],
+    *,
+    level: Optional[str],
+    topic: Optional[str],
+) -> int:
+    """
+    Persist validated AI pairs returned to the user. INSERT OR IGNORE on unique
+    (source_language, target_language, default_text, target_text).
+    source_type=ai_fallback. Uses a fresh connection (safe for background threads).
+    Returns number of rows inserted.
+    """
+    if not pairs:
+        return 0
+    path = _db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    try:
+        ensure_schema_version(conn)
+        inserted = 0
+        topic_val = (topic or "general").strip()[:64] or "general"
+        lvl = level if level and level.upper() in CEFR_ORDER else None
+        for d, t in pairs:
+            da = (d or "").strip()
+            ta = (t or "").strip()
+            if not da or not ta:
+                continue
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO vocab_entries
+                (source_language, target_language, default_text, target_text, level, topic, tags, score, source_type)
+                VALUES (?, ?, ?, ?, ?, ?, 'ai_fallback', 0.82, 'ai_fallback')
+                """,
+                (source_language.lower(), target_language.lower(), da, ta, lvl, topic_val),
+            )
+            if cur.rowcount and cur.rowcount > 0:
+                inserted += int(cur.rowcount)
+        conn.commit()
+        logger.info(
+            "persist_ai_fallback_pairs inserted=%d pair_count=%d lang=%s-%s",
+            inserted,
+            len(pairs),
+            source_language,
+            target_language,
+        )
+        return inserted
+    except Exception:
+        logger.exception("persist_ai_fallback_pairs failed")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return 0
+    finally:
+        conn.close()
 
 
 def describe_schema() -> str:

@@ -11,12 +11,13 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from app.config import DEBUG
 from app.evaluation_log import log_evaluation_run
 from app.graph import create_graph
+from app.vocab_store import persist_ai_fallback_pairs
 from app.idempotency import get as idempotency_get, set as idempotency_set
 from app.logging_config import setup_logging
 from app.schemas import (
@@ -134,10 +135,16 @@ def _get_drawable_graph():
 
 # Known nodes: role and data flow (best-effort from code structure; not runtime trace).
 _DEBUG_NODE_ROLES = {
-    "relevance_check": "gate",
-    "level_resolution": "enrichment",
-    "topic_identification": "preparation",
-    "box_creation_placeholder": "retrieval and box build",
+    "relevance_check": "gate (LLM)",
+    "level_resolution": "CEFR explicit or LLM infer",
+    "topic_identification": "deterministic keywords or AI classifier",
+    "decide_retrieval_route": "db_first | ai_first | mixed (deterministic)",
+    "db_retrieval_attempt": "SQLite retrieval by topic/level/lang",
+    "retrieval_quality_assessment": "count primary-topic DB rows (strong threshold)",
+    "ai_word_generation": "OpenAI Responses JSON schema; ~18s timeout default",
+    "result_merge_and_filter": "merge DB+AI, dedupe, DB preferred on ties",
+    "box_creation_finalize": "build boxes; queue persist_ai_fallback_pairs",
+    "async_persist_ai_words": "marks queue; HTTP layer runs BackgroundTasks after response",
 }
 _DEBUG_NODE_IO = {
     "relevance_check": {
@@ -150,17 +157,49 @@ _DEBUG_NODE_IO = {
     },
     "topic_identification": {
         "consumes": ["prompt"],
-        "produces": ["topic", "topic_confidence", "topic_source", "topic_reason"],
+        "produces": ["topic", "topic_confidence", "topic_source", "topic_reason", "topic_keywords", "situation_label"],
     },
-    "box_creation_placeholder": {
-        "consumes": ["topic", "topic_source", "topic_reason", "level", "default_language", "target_language", "existing_boxes"],
-        "produces": ["status", "boxes", "user_message", "reached_box_creation", "candidate_debug (if DEBUG_BOX_CANDIDATES=1)"],
+    "decide_retrieval_route": {
+        "consumes": ["topic", "topic_confidence", "topic_keywords", "situation_label", "topic_reason", "prompt"],
+        "produces": ["retrieval_route", "retrieval_route_reason", "retrieval_route_confidence"],
+    },
+    "db_retrieval_attempt": {
+        "consumes": ["topic", "level", "default_language", "target_language", "existing_boxes", "topic_reason", "topic_keywords"],
+        "produces": ["_db_entries", "_db_stats", "db_candidate_count"],
+    },
+    "retrieval_quality_assessment": {
+        "consumes": ["_db_entries"],
+        "produces": ["db_strong_candidate_count"],
+    },
+    "ai_word_generation": {
+        "consumes": ["prompt", "level", "languages", "topic metadata", "retrieval_route", "existing_boxes"],
+        "produces": ["_ai_generation_attempted", "_ai_validated", "ai_used", "ai_candidate_count", "ai_validated_count", "ai_failure_reason"],
+    },
+    "result_merge_and_filter": {
+        "consumes": ["retrieval_route", "_db_entries", "_ai_validated", "_ai_generation_attempted", "db_strong_candidate_count"],
+        "produces": ["_final_merged_rows", "final_candidate_count", "final_mix_strategy", "db_fallback_used", "ai_supplement_used"],
+    },
+    "box_creation_finalize": {
+        "consumes": ["_final_merged_rows", "topic", "request_id"],
+        "produces": ["status", "boxes", "user_message", "reached_box_creation", "persist_ai_fallback_pairs", "candidate_debug (optional)"],
+    },
+    "async_persist_ai_words": {
+        "consumes": ["persist_ai_fallback_pairs"],
+        "produces": ["async_persist_queued"],
     },
 }
 
 # State keys grouped for readability (from BoxWorkflowState).
 _DEBUG_STATE_REQUEST = ["request_id", "customer_id", "prompt", "default_language", "target_language", "existing_boxes"]
-_DEBUG_STATE_WORKFLOW = ["is_relevant", "relevance_user_message", "level", "level_source", "topic", "topic_confidence", "topic_source", "topic_reason", "reached_box_creation"]
+_DEBUG_STATE_WORKFLOW = [
+    "is_relevant", "relevance_user_message", "level", "level_source",
+    "topic", "topic_confidence", "topic_source", "topic_reason", "topic_keywords", "situation_label",
+    "retrieval_route", "retrieval_route_reason", "retrieval_route_confidence",
+    "db_candidate_count", "db_strong_candidate_count",
+    "ai_used", "ai_candidate_count", "ai_validated_count", "ai_failure_reason",
+    "final_candidate_count", "final_mix_strategy", "db_fallback_used", "ai_supplement_used",
+    "async_persist_queued", "reached_box_creation",
+]
 _DEBUG_STATE_RESPONSE = ["status", "user_message", "boxes"]
 
 
@@ -204,10 +243,16 @@ def _get_flow_order(drawable, compiled_graph) -> list[str]:
 
 # Known graph structure for "hands off to" (conditionals not always in drawable edges).
 _DEBUG_HANDS_OFF = {
-    "relevance_check": ["topic_identification", "end (if not relevant)"],
-    "topic_identification": ["level_resolution"],
-    "level_resolution": ["box_creation_placeholder"],
-    "box_creation_placeholder": ["end"],
+    "relevance_check": ["topic_identification", "END (if not relevant)"],
+    "topic_identification": ["decide_retrieval_route"],
+    "decide_retrieval_route": ["level_resolution"],
+    "level_resolution": ["db_retrieval_attempt"],
+    "db_retrieval_attempt": ["retrieval_quality_assessment"],
+    "retrieval_quality_assessment": ["ai_word_generation OR result_merge_and_filter (branch)"],
+    "ai_word_generation": ["result_merge_and_filter"],
+    "result_merge_and_filter": ["box_creation_finalize"],
+    "box_creation_finalize": ["async_persist_ai_words"],
+    "async_persist_ai_words": ["END"],
 }
 
 
@@ -233,29 +278,89 @@ def _introspect_node_callable(runnable) -> Optional[object]:
     return fn if callable(fn) else runnable
 
 
+# Ground-truth AI metadata per graph node. (_introspect_ai_usage used to scan only the node's own
+# source for _get_llm/ChatOpenAI; delegating helpers like classify_with_ai / generate_word_pairs
+# caused an early return with "AI calls: 0" before name-based fixes could run.)
+_DEBUG_NODE_AI_METADATA: dict[str, dict[str, str]] = {
+    "relevance_check": {
+        "ai_calls": "1× Chat Completions per run",
+        "model": "OPENAI_MODEL (default gpt-4o-mini); ChatOpenAI + OPENAI_REQUEST_TIMEOUT (app.box_workflow._get_llm)",
+        "mode": "Always invokes LLM for RELEVANT / NOT_RELEVANT",
+    },
+    "topic_identification": {
+        "ai_calls": "0 or 1× Chat Completions",
+        "model": "When used: OPENAI_MODEL / gpt-4o-mini via app.ai_topic_classifier.classify_with_ai (ChatOpenAI)",
+        "mode": "Keyword path if non-general topic with confidence ≥ 0.7; else classify_with_ai (JSON: topic, keywords, situation_label)",
+    },
+    "level_resolution": {
+        "ai_calls": "0 or 1× Chat Completions",
+        "model": "When used: OPENAI_MODEL / gpt-4o-mini (app.box_workflow._infer_level_with_llm → _get_llm)",
+        "mode": "If prompt contains A1–C2 → explicit level, no LLM; else one inference call from boxes/words context",
+    },
+    "decide_retrieval_route": {
+        "ai_calls": "none",
+        "model": "n/a",
+        "mode": "Pure Python from topic, confidence, prompt keywords",
+    },
+    "db_retrieval_attempt": {
+        "ai_calls": "none",
+        "model": "n/a",
+        "mode": "SQLite retrieve_candidates",
+    },
+    "retrieval_quality_assessment": {
+        "ai_calls": "none",
+        "model": "n/a",
+        "mode": "Counts primary-phase DB rows in _db_entries",
+    },
+    "ai_word_generation": {
+        "ai_calls": "0 or 1× Responses API (when node runs)",
+        "model": "OPENAI_WORD_GEN_MODEL (default gpt-4o-mini); client.responses.create + strict json_schema",
+        "mode": "When reached: distinct langs both in {en,de,es,fr,it,pt,nl,pl}; skipped if db_first+20 strong DB. Timeout WORD_GEN_TIMEOUT (default 18s).",
+    },
+    "result_merge_and_filter": {
+        "ai_calls": "none",
+        "model": "n/a",
+        "mode": "Merge/dedupe by retrieval_route; no LLM",
+    },
+    "box_creation_finalize": {
+        "ai_calls": "none",
+        "model": "n/a",
+        "mode": "Build boxes + persist_ai_fallback_pairs list for BackgroundTasks",
+    },
+    "async_persist_ai_words": {
+        "ai_calls": "none",
+        "model": "n/a",
+        "mode": "Sets async_persist_queued; SQLite persist runs after HTTP in main.py",
+    },
+}
+
+
 def _introspect_ai_usage(fn) -> dict[str, str]:
-    """
-    Best-effort AI usage introspection for a node.
-    Focuses on whether _get_llm()/ChatOpenAI is used, and how often in normal paths.
-    """
-    info = {
-        "ai_calls": "0",
-        "model": "none",
+    """Return AI usage line for debug cards: explicit table first, then source heuristics."""
+    base = {
+        "ai_calls": "none",
+        "model": "n/a",
         "mode": "deterministic",
     }
     if fn is None:
-        info["mode"] = "unknown (no callable)"
-        return info
+        base["mode"] = "unknown (no callable)"
+        return base
+    name = getattr(fn, "__name__", "")
+    if name in _DEBUG_NODE_AI_METADATA:
+        row = _DEBUG_NODE_AI_METADATA[name]
+        return {
+            "ai_calls": row["ai_calls"],
+            "model": row["model"],
+            "mode": row["mode"],
+        }
     try:
         src = inspect.getsource(fn)
     except OSError:
         src = ""
     uses_llm = "_get_llm(" in src or "ChatOpenAI(" in src
     if not uses_llm:
-        return info
-
-    # Derive model description from shared _get_llm helper if available.
-    model_desc = "configured OpenAI model"
+        return base
+    model_desc = "OPENAI_MODEL (see app.box_workflow._get_llm)"
     try:
         from app import box_workflow as _bw  # type: ignore
 
@@ -263,35 +368,18 @@ def _introspect_ai_usage(fn) -> dict[str, str]:
             llm_src = inspect.getsource(_bw._get_llm)
             marker = 'OPENAI_MODEL", "'
             idx = llm_src.find(marker)
-            default_model = None
             if idx != -1:
                 start = idx + len(marker)
                 end = llm_src.find('"', start)
                 if end != -1:
-                    default_model = llm_src[start:end]
-            if default_model:
-                model_desc = f"configured OpenAI model (OPENAI_MODEL env, default {default_model})"
-            else:
-                model_desc = "configured OpenAI model (OPENAI_MODEL env)"
+                    model_desc = f"OPENAI_MODEL, default {llm_src[start:end]}"
     except Exception:
-        # Fall back to generic description if introspection fails.
-        model_desc = "configured OpenAI model"
-
-    info["model"] = model_desc
-    name = getattr(fn, "__name__", "")
-    if name == "relevance_check":
-        info["ai_calls"] = "1"
-        info["mode"] = "always"
-    elif name == "level_resolution":
-        info["ai_calls"] = "conditional (0 or 1)"
-        info["mode"] = "only when level is inferred"
-    elif name == "topic_identification":
-        info["ai_calls"] = "conditional (0 or 1)"
-        info["mode"] = "deterministic fast-path; AI fallback when topic is general or low confidence"
-    else:
-        info["ai_calls"] = "0"
-        info["mode"] = "deterministic"
-    return info
+        pass
+    return {
+        "ai_calls": "see source (ChatOpenAI)",
+        "model": model_desc,
+        "mode": "invokes _get_llm or ChatOpenAI in this callable",
+    }
 
 
 def _node_purpose(fn) -> str:
@@ -318,10 +406,16 @@ def _node_source(fn) -> str:
 def _format_flow_overview(flow_order: list[str]) -> str:
     """Flow section: numbered steps in execution order, clear arrows."""
     step_labels = {
-        "relevance_check": "Decide if prompt is suitable for vocabulary-box generation",
-        "level_resolution": "Resolve or infer learner level (CEFR)",
-        "topic_identification": "Identify topic (hybrid: deterministic keywords or AI); output topic key, confidence, source, reason",
-        "box_creation_placeholder": "Retrieve vocabulary by topic/level (deterministic); situation-aware ranking when topic from AI; build box",
+        "relevance_check": "1× Chat Completions: RELEVANT / NOT_RELEVANT",
+        "topic_identification": "Keywords (no LLM) or 1× Chat Completions (ai_topic_classifier)",
+        "decide_retrieval_route": "db_first | ai_first | mixed (no LLM)",
+        "level_resolution": "CEFR from prompt (no LLM) or 1× Chat Completions infer",
+        "db_retrieval_attempt": "SQLite only",
+        "retrieval_quality_assessment": "Count primary DB rows (no LLM)",
+        "ai_word_generation": "0–1× Responses API (branch); WORD_GEN_TIMEOUT default 18s",
+        "result_merge_and_filter": "Merge DB+AI (no LLM)",
+        "box_creation_finalize": "Build boxes + persist queue (no LLM)",
+        "async_persist_ai_words": "Flag queue; SQLite after HTTP response",
     }
     lines = []
     lines.append("1. Request enters workflow")
@@ -330,13 +424,22 @@ def _format_flow_overview(flow_order: list[str]) -> str:
         num = i + 2
         label = step_labels.get(name, name)
         lines.append(f"{num}. {label}")
-        lines.append("   -> " + (flow_order[i + 1] if i + 1 < len(flow_order) else "end"))
+        nxt = flow_order[i + 1] if i + 1 < len(flow_order) else "end"
+        if name == "retrieval_quality_assessment":
+            nxt = "ai_word_generation OR merge (branch)"
+        lines.append("   -> " + nxt)
     return "\n".join(lines)
 
 
 # Display names for graph overview (internal node names -> diagram label)
 _DEBUG_NODE_DISPLAY_NAMES = {
-    "box_creation_placeholder": "box_creation",
+    "decide_retrieval_route": "route",
+    "db_retrieval_attempt": "db_retrieval",
+    "retrieval_quality_assessment": "db_quality",
+    "ai_word_generation": "ai_words",
+    "result_merge_and_filter": "merge",
+    "box_creation_finalize": "box_build",
+    "async_persist_ai_words": "persist_queue",
 }
 
 def _format_graph_overview(flow_order: list[str]) -> str:
@@ -402,6 +505,9 @@ def _format_state_summary() -> str:
     lines.append("  Response fields:")
     for k in _DEBUG_STATE_RESPONSE:
         lines.append(f"    - {k}")
+    lines.append("  Internal / pipeline (API omits some):")
+    lines.append("    - _db_entries, _db_stats, _ai_validated, _ai_generation_attempted")
+    lines.append("    - _final_merged_rows, persist_ai_fallback_pairs")
     return "\n".join(lines)
 
 
@@ -426,6 +532,9 @@ def _build_ascii_debug_content(drawable, compiled_graph) -> str:
     sections.append("GRAPH OVERVIEW")
     sections.append("-" * 60)
     sections.append(_format_graph_overview(flow_order))
+    sections.append("")
+    sections.append("  Note: builder lists every node; ai_word_generation runs only when the branch")
+    sections.append("  from retrieval_quality_assessment routes there (see Hands off / Mermaid).")
 
     # Flow overview (execution order)
     sections.append("")
@@ -452,32 +561,51 @@ def _build_ascii_debug_content(drawable, compiled_graph) -> str:
     sections.append("-" * 60)
     sections.append(_format_state_summary())
     sections.append("")
+    sections.append("POST-RESPONSE (FastAPI BackgroundTasks)")
+    sections.append("-" * 60)
+    sections.append(
+        "  - After JSON is returned: main._run_persist_ai_fallback → vocab_store.persist_ai_fallback_pairs"
+    )
+    sections.append(
+        "  - INSERT OR IGNORE; source_type=ai_fallback; only pairs actually shown to the user (from persist_ai_fallback_pairs)."
+    )
+    sections.append(
+        "  - Limitation: in-process task; may not finish if the process exits immediately (e.g. some serverless)."
+    )
+    sections.append("")
     return "\n".join(sections)
 
 
 def _build_app_flow_mermaid() -> str:
-    """
-    Build Mermaid for full app flow and box workflow.
-    Topic: hybrid (deterministic or AI). Retrieval: deterministic; situation-aware ranking when topic_source=ai.
-    """
+    """Matches app/graph.py: branch skips ai_word_generation when DB sufficient or wrong lang pair."""
     return """flowchart TB
   subgraph app[" App flow "]
     A[POST /generate-boxes] --> B[Pydantic validation]
-    B --> C[Request logging]
-    C --> D[Idempotency precheck]
-    D --> E[Build response]
-    E --> F[JSON response]
+    B --> C[Logging]
+    C --> D[Idempotency]
+    D --> WFLOW[LangGraph invoke]
+    WFLOW --> E[Build JSON response]
+    E --> F[Return response]
+    F --> BG[BackgroundTasks: persist_ai_fallback_pairs]
   end
-  subgraph workflow[" Box workflow "]
-    W1[relevance_check] --> W2{relevant?}
+  subgraph workflow[" Box workflow same as graph.py "]
+    W1["relevance_check<br/>1x Chat Completions"] --> W2{relevant?}
     W2 -->|no| WEND1[END]
-    W2 -->|yes| W3[topic_identification hybrid]
-    W3 --> W4[level_resolution]
-    W4 --> W5[box_creation]
-    W5 --> WEND2[END]
+    W2 -->|yes| W3["topic_identification<br/>keywords or 0-1x Chat Completions"]
+    W3 --> W3b[decide_retrieval_route]
+    W3b --> W4["level_resolution<br/>regex CEFR or 0-1x Chat Completions"]
+    W4 --> W5[db_retrieval_attempt]
+    W5 --> W6[retrieval_quality_assessment]
+    W6 --> W6b{Run ai_word_generation?}
+    W6b -->|Yes EN-DE or EN-ES and not db_first with 20 strong primary| W7["ai_word_generation Responses API JSON"]
+    W6b -->|No wrong pair or DB enough| W8[result_merge_and_filter]
+    W7 --> W8
+    W8 --> W9[box_creation_finalize]
+    W9 --> W10[async_persist_ai_words]
+    W10 --> WEND2[END]
   end
-  D --> workflow
-  workflow --> E
+  D --> WFLOW
+  WFLOW --> E
 """
 
 
@@ -577,8 +705,35 @@ def _workflow_state_to_response(state: dict) -> GenerateBoxesResponse:
     )
 
 
+def _run_persist_ai_fallback(
+    default_lang: str,
+    target_lang: str,
+    pairs: list,
+    level: Optional[str],
+    topic: Optional[str],
+    request_id: str,
+) -> None:
+    """Background task: persist returned AI pairs (INSERT OR IGNORE)."""
+    if not pairs:
+        return
+    tpl = [(p.get("default", ""), p.get("target", "")) for p in pairs]
+    n = persist_ai_fallback_pairs(
+        default_lang,
+        target_lang,
+        tpl,
+        level=level,
+        topic=topic,
+    )
+    logger.info(
+        "background_persist_ai id=%s inserted=%d",
+        request_id,
+        n,
+        extra={"request_id": request_id},
+    )
+
+
 @app.post("/generate-boxes", response_model=GenerateBoxesResponse)
-def generate_boxes(req: GenerateBoxesRequest) -> GenerateBoxesResponse:
+def generate_boxes(req: GenerateBoxesRequest, background_tasks: BackgroundTasks) -> GenerateBoxesResponse:
     """
     Generate one box of words: relevance -> level resolution (explicit or inferred) -> topic -> box placeholder.
     Returns structured status, levelSource, topic, reachedBoxCreation, and optional userMessage.
@@ -615,6 +770,17 @@ def generate_boxes(req: GenerateBoxesRequest) -> GenerateBoxesResponse:
     try:
         initial = _request_to_workflow_state(req)
         final = graph.invoke(initial)
+        to_persist = list(final.get("persist_ai_fallback_pairs") or [])
+        if to_persist:
+            background_tasks.add_task(
+                _run_persist_ai_fallback,
+                req.defaultLanguage.lower(),
+                req.targetLanguage.lower(),
+                to_persist,
+                final.get("level"),
+                final.get("topic"),
+                req.requestId,
+            )
         resp = _workflow_state_to_response(final)
         logger.info(
             "request_complete requestId=%s status=%s level=%s levelSource=%s topic=%s reachedBoxCreation=%s",

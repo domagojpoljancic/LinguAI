@@ -18,26 +18,26 @@ import requests
 
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:2024")
 
-# (prompt, expected_topic_style: "supported" | "unsupported" | "supported_travel" etc., expect_box: bool)
+# (prompt, note, expect_box, target_lang)
 CASES = [
-    ("A1 restaurant words in German", "supported", True),
-    ("B1 travel vocabulary in Spanish", "supported", True),
-    ("football words in German", "unsupported", False),
-    ("basketball vocabulary in Spanish", "unsupported", False),
-    ("words for going to the gym", "unsupported", False),
-    ("phrases for the airport", "supported", True),  # travel
-    ("vocabulary for talking to a landlord", "unsupported", False),
-    ("words for labor with my wife", "supported", True),  # health
+    ("A1 restaurant words in German", "supported", True, "de"),
+    ("B1 travel vocabulary in Spanish", "supported", True, "es"),
+    ("football words in German", "ai_broad", True, "de"),
+    ("basketball vocabulary in Spanish", "ai_broad", True, "es"),
+    ("words for going to the gym", "ai_broad", True, "de"),
+    ("phrases for the airport", "travel", True, "es"),
+    ("vocabulary for talking to a landlord", "ai_broad", True, "de"),
+    ("words for labor with my wife", "health", True, "de"),
 ]
 
 
-def make_body(prompt: str, case_id: int) -> dict:
+def make_body(prompt: str, case_id: int, target_lang: str) -> dict:
     return {
         "requestId": f"flex-val-{case_id}-{hash(prompt) % 10**6}",
         "customerId": "flex-validation",
         "prompt": prompt,
         "defaultLanguage": "en",
-        "targetLanguage": "de",
+        "targetLanguage": target_lang,
         "existingBoxes": [],
     }
 
@@ -45,10 +45,10 @@ def make_body(prompt: str, case_id: int) -> dict:
 def main() -> int:
     endpoint = f"{BASE_URL}/generate-boxes"
     results = []
-    for i, (prompt, expected_style, expect_box) in enumerate(CASES):
+    for i, (prompt, _note, expect_box, tl) in enumerate(CASES):
         print(f"\n[{i+1}] {prompt!r}")
         try:
-            r = requests.post(endpoint, json=make_body(prompt, i), timeout=45)
+            r = requests.post(endpoint, json=make_body(prompt, i, tl), timeout=45)
             r.raise_for_status()
             body = r.json()
         except Exception as e:
@@ -82,10 +82,13 @@ def main() -> int:
         if situation_label:
             interpreted += f" situation={situation_label!r}"
 
-        # Useful: supported topic with box, or unsupported with topic_not_supported and no box
+        # Useful: expect_box => real words; else irrelevant or generation_empty acceptable
         topic_not_supported = status == "topic_not_supported"
-        useful = (expect_box and box_returned) or (not expect_box and topic_not_supported and not box_returned)
-        honest_fail = (not expect_box and topic_not_supported) or (expect_box and box_returned)
+        gen_empty = status == "generation_empty"
+        useful = (expect_box and box_returned) or (
+            not expect_box and (topic_not_supported or gen_empty or status == "irrelevant_request")
+        )
+        honest_fail = (expect_box and box_returned) or (not expect_box)
 
         print(f"    status: {status}")
         print(f"    interpreted: {interpreted}")
