@@ -730,11 +730,11 @@ private struct AISuggestSheetContent: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .padding(.bottom, 20)
+                .padding(.bottom, 16)
 
                 if case .retryableFailure(let message) = uiState {
                     retryBanner(message: message)
-                        .padding(.bottom, 16)
+                        .padding(.bottom, 12)
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -745,8 +745,10 @@ private struct AISuggestSheetContent: View {
                 }
 
                 targetLanguageSection
-                    .padding(.top, 20)
-                    .padding(.bottom, 40)
+                    .padding(.top, 12)
+                    // Prevent chips from being visually covered by the bottom CTA inset on
+                    // first paint (some iOS devices require a layout pass to resolve safe-area overlap).
+                    .padding(.bottom, 56)
             }
             .padding(ModalStyle.edgePadding)
         }
@@ -774,7 +776,7 @@ private struct AISuggestSheetContent: View {
 
     /// Target language chip row: label + horizontal scroll of pills. Uses fixed height and clear styling so chips are never clipped and remain readable in light/dark mode.
     private var targetLanguageSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             Text("Target language")
                 .font(.system(.subheadline, design: .rounded).weight(.semibold))
                 .foregroundStyle(.secondary)
@@ -850,8 +852,8 @@ private struct AISuggestSheetContent: View {
         .frame(minHeight: 50)
         .disabled(isSubmitDisabled)
         .padding(.horizontal, ModalStyle.edgePadding)
-        .padding(.top, 20)
-        .padding(.bottom, 16)
+        .padding(.top, 16)
+        .padding(.bottom, 8)
         .background(Color(.systemBackground))
         .overlay(alignment: .top) {
             Divider()
@@ -933,7 +935,7 @@ private struct AISuggestSheetContent: View {
             .font(.system(.body, design: .rounded))
             .lineLimit(4...8)
             .padding(12)
-            .frame(minHeight: 120, alignment: .topLeading)
+            .frame(minHeight: 110, alignment: .topLeading)
             .background(Color(.secondarySystemGroupedBackground))
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
