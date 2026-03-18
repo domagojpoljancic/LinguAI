@@ -58,7 +58,14 @@ Start
 - **Typos / fuzzy:** Common typo map + fuzzy match on topic keywords before AI topic call.
 - **Empty results:** `status=generation_empty` (not `generated_placeholder`) when zero words; user-facing retry message.
 - **Topic classifier:** `unsupported` normalized to `general` in `normalize_topic`; prompt steers “general + keywords” for niche themes.
-- **Evaluation:** `scripts/eval_workflow_regression.py` → `logs/eval_workflow_regression.json`; `scripts/eval_workflow_integration.py`; `scripts/validate_flexible_topics.py` (HTTP) updated expectations.
+- **Evaluation:** `scripts/eval_workflow_regression.py` → `logs/eval_workflow_regression.json`; `scripts/eval_workflow_integration.py`; `scripts/validate_flexible_topics.py` (HTTP).
+
+### Recently fixed (high-signal runtime/product issues)
+- **LangGraph state propagation:** added missing internal underscore keys to the shared `BoxWorkflowState` so intermediate node outputs aren’t silently dropped.
+- **OpenAI transport/proxy reliability:** added `openai_httpx_client()` + proxy-bypass retry so evaluation/runtime isn’t blocked by bad proxy env vars.
+- **SQLite thread-safety (server path):** removed global cached SQLite connection reuse; each retrieval call uses its own connection (and closes it), so concurrent FastAPI threads don’t crash.
+- **Relevance false negatives:** added a narrow fast-path in `relevance_check` for short vocabulary-intent prompts (e.g. `Basketball`, `Weather`, `Flowers`, `Cars`) and landlord-like intent.
+- **Fake-success generic filler quality gate:** added a final integrity gate in `box_creation_finalize()` to prevent “niche” box names from returning mostly generic daily/basic filler.
 
 ---
 
@@ -72,6 +79,12 @@ Start
 | **Typo sensitivity** | **Partially fixed** (restaruant → restaurant, fuzzy). Long tail of typos still possible. |
 | **AI not triggered** | Happens if: wrong/missing langs outside allowed set, db_first with 20+ strong DB, missing API key, or branch skips node. |
 | **Evaluation instability** | Results depend on **OPENAI_API_KEY**, model behavior, and latency; same script can pass/fail across runs. |
+| **Niche specificity still brittle** | Even with the final quality gate, niche prompts can still be awkward if topic/situation extraction doesn’t anchor retrieval strongly enough. Quality gate prefers honesty (empty) over fake success, but exact niche coverage may still need tightening. |
+
+Known good right now:
+- Server/runtime path is thread-safe for SQLite retrieval (no cross-thread connection crashes).
+- Fake-success generic filler degradation is gated off with `generation_empty` when niche content is weak.
+- Short-topic relevance false-negatives have a narrow fast-path (Basketball/Weather/Flowers/Cars + landlord-like intent).
 
 ---
 
@@ -93,6 +106,24 @@ Start
 3. **Routing → AI execution** — add structured logging (route + `_ai_generation_attempted` + failure_reason) on every request; optional metrics.
 4. **Finalization** — audit all branches for empty words; align `reachedBoxCreation` semantics with product.
 5. **Evaluation** — pin or document model/env; add CI job that runs regression **with** secrets on schedule; widen edge cases (same-lang pair, very long prompt).
+
+---
+## H. What Still Feels Conceptually Weak
+1. **Broad topic handling** is still split across multiple steps (relevance → topic classification → routing → merge). Even if each step is correct, combined behavior can drift.
+2. **Niche prompts can still degrade awkwardly** if the interpreted `situation_label` / `topic_keywords` doesn’t anchor retrieval strongly enough.
+3. **Prompt understanding may be better centralized earlier** in the workflow (reduce fragmentation across multiple LLM calls and heuristics).
+
+---
+## I. Suggested Next Architectural Direction (NOT yet implemented)
+Consider a single early “AI understanding” step that produces structured output once, then downstream nodes consume it deterministically:
+- relevance
+- topic/subtopic
+- `situation_label`
+- `topic_keywords`
+- route hint
+- optional level hint
+
+This is a future design direction only; it is **not implemented yet**.
 
 ---
 
@@ -132,6 +163,7 @@ BASE_URL=http://localhost:2024 python3 scripts/validate_flexible_topics.py
 
 - Request/response (debug): `logs/request_response.log` when `DEBUG=true`
 - Regression JSON: `logs/eval_workflow_regression.json`
+- Flexible-topic HTTP validation output: `logs/flexible_topic_validation.json`
 
 **Debug endpoints** (require `DEBUG=true`):
 

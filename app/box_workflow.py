@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.config import OPENAI_REQUEST_TIMEOUT
+from app.config import openai_httpx_client
 from app.state import BoxWorkflowState
 from app.schemas import (
     STATUS_IRRELEVANT_REQUEST,
@@ -67,14 +68,19 @@ TOPIC_SITUATION_BOOST: dict[str, list[str]] = {
 }
 
 
-def _get_llm():
+def _get_llm(*, bypass_proxy: bool = False):
     """Lazy LLM so graph can be built without OPENAI_API_KEY at import time. Uses OPENAI_REQUEST_TIMEOUT."""
     from langchain_openai import ChatOpenAI
+    import httpx
+
     model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    # Optionally bypass env proxies for environments where the proxy blocks OpenAI.
+    http_client = httpx.Client(timeout=None, trust_env=False) if bypass_proxy else openai_httpx_client(timeout=None)
     return ChatOpenAI(
         model=model,
         request_timeout=OPENAI_REQUEST_TIMEOUT,
         api_key=os.environ.get("OPENAI_API_KEY"),
+        http_client=http_client,
     )
 
 
@@ -92,6 +98,42 @@ def _irrelevant_fallback_message(request_id: str) -> str:
     """Pick a consistent fallback message for irrelevant requests (no LLM)."""
     h = hash(request_id or "") % len(IRRELEVANT_FALLBACK_MESSAGES)
     return IRRELEVANT_FALLBACK_MESSAGES[h]
+
+
+# For short topic-only prompts, the LLM relevance classifier can false-negative
+# (e.g. "Basketball", "Weather", "Flowers", "Cars"). We add a very small,
+# explicit fast-path for these vocabulary-intent nouns and landlord-like intent.
+_SHORT_VOCAB_INTENT = frozenset({"basketball", "weather", "flowers", "flower", "cars", "car"})
+_LANDLORD_INTENT = frozenset({"landlord"})
+
+
+def _relevance_fast_path(prompt: str) -> Optional[bool]:
+    """
+    Return:
+    - True  => force-relevant and skip LLM
+    - None  => don't override (fall back to LLM)
+
+    Notes:
+    - We intentionally never force NOT_RELEVANT here to avoid false positives.
+    """
+    p = (prompt or "").strip()
+    if not p:
+        return None
+
+    # Normalize to alpha tokens so "Basketball." or "Cars?" still match.
+    tokens = re.findall(r"[a-zA-Z]+", p.lower())
+    if not tokens:
+        return None
+
+    # Exact one-word topic noun.
+    if len(tokens) == 1 and tokens[0] in _SHORT_VOCAB_INTENT:
+        return True
+
+    # Landlord-like conversation intents ("talking to landlord", "landlord", etc).
+    if any(t in _LANDLORD_INTENT for t in tokens):
+        return True
+
+    return None
 
 
 RELEVANCE_SYSTEM = """You judge whether a user prompt is relevant for generating a vocabulary/word list to learn in a language-learning app.
@@ -126,7 +168,8 @@ def relevance_check(state: BoxWorkflowState) -> dict:
     Single LLM call; returns is_relevant, relevance_user_message, and status if irrelevant.
     """
     request_id = state.get("request_id", "")
-    prompt = (state.get("prompt") or "").strip() or " "
+    prompt_raw = (state.get("prompt") or "").strip()
+    prompt = prompt_raw or " "
     logger.info("relevance_check.start id=%s", request_id, extra={"request_id": request_id})
     model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
     logger.info(
@@ -134,6 +177,16 @@ def relevance_check(state: BoxWorkflowState) -> dict:
         request_id, model, len(prompt),
         extra={"request_id": request_id, "call_type": "relevance_check", "model": model, "prompt_length": len(prompt)},
     )
+
+    fast_path = _relevance_fast_path(prompt_raw)
+    if fast_path is True:
+        # Skip LLM; these prompts are already explicit vocabulary-intent nouns.
+        return {
+            "is_relevant": True,
+            "relevance_user_message": "",
+            "status": "",
+            "user_message": "",
+        }
     try:
         msg = _get_llm().invoke([
             SystemMessage(content=RELEVANCE_SYSTEM),
@@ -179,13 +232,48 @@ def relevance_check(state: BoxWorkflowState) -> dict:
             "user_message": user_message if not is_relevant else "",
         }
     except Exception:
+        # Minimal resilience: retry once with proxy bypass (heuristics + trust_env=False)
+        # if the first attempt fails. Exception messages vary across httpx/openai versions.
         logger.exception("relevance_check.error id=%s openai_call_failed", request_id)
-        return {
-            "is_relevant": False,
-            "relevance_user_message": "Something went wrong. Please try again.",
-            "status": STATUS_IRRELEVANT_REQUEST,
-            "user_message": "Something went wrong. Please try again.",
-        }
+        try:
+            msg = _get_llm(bypass_proxy=True).invoke(
+                [
+                    SystemMessage(content=RELEVANCE_SYSTEM),
+                    HumanMessage(content=prompt),
+                ]
+            )
+            raw = (msg.content or "").strip()
+            text = raw.upper()
+            first_chunk = (text.split("\n")[0] if "\n" in text else text)[:200]
+            if "NOT_RELEVANT" in first_chunk:
+                is_relevant = False
+            elif "RELEVANT" in first_chunk:
+                is_relevant = True
+            else:
+                is_relevant = False
+
+            user_message = ""
+            if not is_relevant:
+                lines = [s.strip() for s in raw.split("\n") if s.strip()]
+                candidate = (lines[1] if len(lines) > 1 else "").strip()
+                if candidate and candidate not in ("-", "RELEVANT", "NOT_RELEVANT") and len(candidate) > 10:
+                    user_message = candidate
+                else:
+                    user_message = _irrelevant_fallback_message(request_id)
+
+            return {
+                "is_relevant": is_relevant,
+                "relevance_user_message": user_message,
+                "status": STATUS_IRRELEVANT_REQUEST if not is_relevant else "",
+                "user_message": user_message if not is_relevant else "",
+            }
+        except Exception:
+            return {
+                "is_relevant": False,
+                "relevance_user_message": "Something went wrong. Please try again.",
+                "status": STATUS_IRRELEVANT_REQUEST,
+                "user_message": "Something went wrong. Please try again.",
+            }
 
 
 # ---- Level resolution (always produces a level: explicit or inferred; never ends flow) ----
@@ -885,6 +973,215 @@ def _box_display_name(state: BoxWorkflowState, topic_key: str) -> str:
     return TOPIC_TO_BOX_NAME.get(topic_key, DEFAULT_BOX_NAME)
 
 
+_GENERIC_FILLER_TOKENS = frozenset(
+    {
+        "afternoon",
+        "clock",
+        "good",
+        "morning",
+        "evening",
+        "night",
+        "today",
+        "tomorrow",
+        "yesterday",
+        "day",
+        "hour",
+        "minute",
+        "second",
+        "no",
+        "day",
+        "hello",
+        "hi",
+        "please",
+        "thank",
+        "sorry",
+        "time",
+        "yes",
+        "month",
+        "week",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "number",
+        "everyday",
+    }
+)
+
+_QUALITY_STOP_TOKENS = frozenset(
+    {
+        "vocabulary",
+        "word",
+        "words",
+        "learn",
+        "learning",
+        "app",
+        "language",
+        "languages",
+        "for",
+        "to",
+        "the",
+        "a",
+        "an",
+        "and",
+        "with",
+        "in",
+        "at",
+        "on",
+        "from",
+        "of",
+        "daily",
+        "basic",
+        "basics",
+    }
+)
+
+
+def _tokenize(s: str) -> Set[str]:
+    s = (s or "").lower()
+    return set(re.findall(r"[a-z]{2,}", s))
+
+
+def _is_generic_filler_word(default_text: str, target_text: str | None = None) -> bool:
+    # Heuristic: detect known "daily/basic" filler words dominating niche prompts.
+    t_default = (default_text or "").strip().lower()
+    if not t_default:
+        return False
+    toks = _tokenize(t_default)
+    return bool(toks.intersection(_GENERIC_FILLER_TOKENS))
+
+
+def _extract_topic_match_tokens(state: BoxWorkflowState) -> Set[str]:
+    tokens: Set[str] = set()
+    for kw in state.get("topic_keywords") or []:
+        if isinstance(kw, str) and kw.strip():
+            tokens.update(_tokenize(kw))
+    situation_label = (state.get("situation_label") or "").strip()
+    if situation_label:
+        tokens.update(_tokenize(situation_label))
+    tokens = {t for t in tokens if t and t not in _QUALITY_STOP_TOKENS}
+    return tokens
+
+
+def _final_words_quality_gate(
+    state: BoxWorkflowState,
+    rows: List[Dict[str, Any]],
+) -> Tuple[bool, List[Dict[str, Any]]]:
+    """
+    Return (passed, maybe_replaced_rows).
+
+    Gate is intentionally narrow:
+    - only applies for topic=general/daily when we also have a niche situation_label/keywords
+    - detects "generic filler dominance" (e.g. hello/time/clock/yes) and ensures topic overlap exists
+    - if weak and AI validated words are available, attempts to swap in AI words first
+    """
+    topic_key = (state.get("topic") or "").strip().lower() or "general"
+    situation_label = (state.get("situation_label") or "").strip()
+    keyword_tokens = _extract_topic_match_tokens(state)
+    if topic_key not in ("general", "daily") or not situation_label or len(keyword_tokens) == 0:
+        return True, rows
+
+    if not rows:
+        return False, []
+
+    total = len(rows)
+    generic_hits = 0
+    topic_hits = 0
+
+    for r in rows:
+        d = r.get("default") or ""
+        t = r.get("target") or ""
+        if _is_generic_filler_word(d, t):
+            generic_hits += 1
+        d_toks = _tokenize(d) if d else set()
+        t_toks = _tokenize(t) if t else set()
+        if keyword_tokens.intersection(d_toks.union(t_toks)):
+            topic_hits += 1
+
+    generic_ratio = generic_hits / max(1, total)
+    topic_ratio = topic_hits / max(1, total)
+
+    # Weak if generic filler dominates and the box lacks topic overlap.
+    weak = generic_ratio >= 0.40 and topic_ratio <= 0.15
+    if not weak:
+        return True, rows
+
+    # Attempt targeted recovery: swap in validated AI words (when available),
+    # because they were already checked for structure/valid pairs.
+    ai_raw = state.get("_ai_validated") or []
+    ai_items: List[Dict[str, Any]] = [
+        {
+            "default": x.get("default"),
+            "target": x.get("target"),
+            "confidence": float(x.get("confidence", 0.8)),
+        }
+        for x in ai_raw
+        if isinstance(x, dict) and x.get("default") and x.get("target")
+    ]
+
+    if not ai_items:
+        return False, []
+
+    def _norm_pair(d: str, t: str) -> Tuple[str, str]:
+        return ((d or "").strip().lower(), (t or "").strip().lower())
+
+    seen: Set[Tuple[str, str]] = set()
+    kept: List[Dict[str, Any]] = []
+    for r in rows:
+        d = r.get("default") or ""
+        t = r.get("target") or ""
+        if _is_generic_filler_word(d, t):
+            continue
+        k = _norm_pair(d, t)
+        if k[0] == "" or k[1] == "" or k in seen:
+            continue
+        seen.add(k)
+        kept.append(r)
+
+    # Prioritize AI words; keep non-generic DB words as a base.
+    ai_items_sorted = sorted(ai_items, key=lambda x: -x.get("confidence", 0.0))
+    rebuilt: List[Dict[str, Any]] = []
+    rebuilt.extend(kept[: max(0, total // 2)])  # keep some non-generic DB signal
+    for a in ai_items_sorted:
+        if len(rebuilt) >= MAX_BOX_WORDS:
+            break
+        d = a["default"]
+        t = a["target"]
+        k = _norm_pair(d, t)
+        if k[0] == "" or k[1] == "" or k in seen:
+            continue
+        seen.add(k)
+        rebuilt.append({"default": d, "target": t, "source": "ai"})
+
+    if len(rebuilt) < 5:
+        # Too little to be credible; treat as weak.
+        return False, []
+
+    # Re-run quality gate on rebuilt set.
+    total2 = len(rebuilt)
+    generic_hits2 = 0
+    topic_hits2 = 0
+    for r in rebuilt:
+        d = r.get("default") or ""
+        t = r.get("target") or ""
+        if _is_generic_filler_word(d, t):
+            generic_hits2 += 1
+        d_toks = _tokenize(d) if d else set()
+        t_toks = _tokenize(t) if t else set()
+        if keyword_tokens.intersection(d_toks.union(t_toks)):
+            topic_hits2 += 1
+    generic_ratio2 = generic_hits2 / max(1, total2)
+    topic_ratio2 = topic_hits2 / max(1, total2)
+    weak2 = generic_ratio2 >= 0.40 and topic_ratio2 <= 0.15
+    return (not weak2), (rebuilt if not weak2 else [])
+
+
 def box_creation_finalize(state: BoxWorkflowState) -> dict:
     """Build response box from merged words; queue AI pairs for post-response persistence."""
     request_id = state.get("request_id", "")
@@ -900,7 +1197,42 @@ def box_creation_finalize(state: BoxWorkflowState) -> dict:
     box_id = f"generated-{request_id or 'box'}"
     boxes: List[dict] = []
     if words:
-        boxes.append({"boxId": box_id, "boxName": box_display_name, "words": words})
+        # Final integrity gate: avoid fake-success niche boxes backed by generic filler.
+        passed, quality_rows = _final_words_quality_gate(state, rows)
+        if not passed:
+            logger.warning(
+                "box_creation_finalize.quality_gate_failed id=%s topic=%s situation=%s generic_rows=%d/%d",
+                request_id,
+                topic_key,
+                (state.get("situation_label") or "").strip(),
+                sum(1 for r in rows if _is_generic_filler_word(r.get("default") or "", r.get("target") or "")),
+                len(rows),
+                extra={"request_id": request_id},
+            )
+            out = {
+                "status": STATUS_GENERATION_EMPTY,
+                "boxes": [],
+                "user_message": (
+                    "I couldn't find enough vocabulary that matches that specific topic. "
+                    "Try rephrasing with a clearer situation (e.g. include 'car parts for a mechanic' "
+                    "or 'flower shop vocabulary') and try again."
+                ),
+                "reached_box_creation": True,
+                "persist_ai_fallback_pairs": [],
+            }
+            return out
+
+        # If recovered via quality gate, rebuild boxes from quality_rows (honest box labeling).
+        quality_words = [{"default": r["default"], "target": r["target"]} for r in (quality_rows or [])]
+        quality_persist = [
+            {"default": r["default"], "target": r["target"]}
+            for r in (quality_rows or [])
+            if r.get("source") == "ai"
+        ]
+        rows = quality_rows
+        boxes.append({"boxId": box_id, "boxName": box_display_name, "words": quality_words})
+        persist = quality_persist
+        words = quality_words
 
     debug_candidates = os.environ.get("DEBUG_BOX_CANDIDATES") == "1"
     candidate_debug = None

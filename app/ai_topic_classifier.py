@@ -70,11 +70,13 @@ def _get_llm():
     import os
     from langchain_openai import ChatOpenAI
     from app.config import OPENAI_REQUEST_TIMEOUT
+    from app.config import openai_httpx_client
     model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
     return ChatOpenAI(
         model=model,
         request_timeout=OPENAI_REQUEST_TIMEOUT,
         api_key=os.environ.get("OPENAI_API_KEY"),
+        http_client=openai_httpx_client(timeout=None),
     )
 
 

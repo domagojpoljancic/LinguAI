@@ -1,6 +1,6 @@
 """Graph state definitions."""
 
-from typing import List, TypedDict
+from typing import Any, Dict, List, TypedDict
 
 
 # ---- Box generation workflow state ----
@@ -48,6 +48,16 @@ class BoxWorkflowState(TypedDict, total=False):
     persist_ai_fallback_pairs: List[dict]  # [{default, target}] for BackgroundTasks; not in API JSON
     async_persist_queued: bool
     _ai_generation_attempted: bool  # internal; graph merge
+
+    # ---- Internal pipeline keys (must be preserved across LangGraph nodes) ----
+    # LangGraph retains only keys declared in the State schema. These are produced/consumed
+    # by node functions below; if missing from the TypedDict they get dropped and downstream
+    # nodes will see empty candidates.
+    _db_entries: List[Dict[str, Any]]  # [{default, target, phase}, ...] from SQLite retrieve_candidates
+    _db_stats: Dict[str, Any]  # raw retrieve_candidates stats (primary/widened counts, etc.)
+    _ai_validated: List[Dict[str, Any]]  # [{default, target, confidence}, ...] from ai_word_generation
+    _final_merged_rows: List[Dict[str, Any]]  # [{default, target, source}, ...] from result_merge_and_filter
+
     boxes: List[dict]
     user_message: str
     reached_box_creation: bool

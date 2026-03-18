@@ -32,6 +32,71 @@ def _word_count(state: dict) -> int:
     return n
 
 
+def _word_defaults(state: dict) -> list[str]:
+    out: list[str] = []
+    for box in state.get("boxes") or []:
+        for w in box.get("words") or []:
+            out.append((w.get("default") or "").strip().lower())
+    return [w for w in out if w]
+
+
+def _generic_filler_ratio(word_defaults: list[str]) -> tuple[float, int, int]:
+    """
+    Returns (ratio, generic_hits, total).
+    Generic is intentionally strict: matches a small set of known daily/basic filler words.
+    """
+    generic_tokens = {
+        "afternoon",
+        "clock",
+        "good",
+        "morning",
+        "evening",
+        "night",
+        "today",
+        "tomorrow",
+        "yesterday",
+        "day",
+        "hour",
+        "minute",
+        "second",
+        "no",
+        "hello",
+        "hi",
+        "please",
+        "thank",
+        "sorry",
+        "time",
+        "yes",
+        "month",
+        "week",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "number",
+        "everyday",
+    }
+
+    def tokens(s: str) -> set[str]:
+        import re
+        return set(re.findall(r"[a-z]+", s.lower()))
+
+    total = len(word_defaults)
+    if total == 0:
+        return 0.0, 0, 0
+    generic_hits = 0
+    for w in word_defaults:
+        if tokens(w).intersection(generic_tokens):
+            generic_hits += 1
+    return generic_hits / total, generic_hits, total
+
+
 def _failures(case: dict, state: dict, has_key: bool) -> list[str]:
     fails: list[str] = []
     st = state.get("status") or ""
@@ -54,6 +119,19 @@ def _failures(case: dict, state: dict, has_key: bool) -> list[str]:
             fails.append("expected_words_but_irrelevant")
         else:
             fails.append("expected_words_but_empty")
+
+    # Product integrity check:
+    # If a niche box name is returned but most words are generic filler, fail.
+    if st == "generated_placeholder" and case.get("expect_niche_quality"):
+        boxes = state.get("boxes") or []
+        box_name = (boxes[0].get("boxName") or "").strip().lower() if boxes else ""
+        niche_tokens = [t.lower() for t in (case.get("niche_tokens") or [])]
+        matches_niche_label = any(t in box_name for t in niche_tokens) if niche_tokens else False
+        word_defs = _word_defaults(state)
+        ratio, generic_hits, total = _generic_filler_ratio(word_defs)
+        if matches_niche_label and total > 0 and ratio >= 0.45:
+            fails.append("niche_fake_success_generic_filler_dominance")
+
     return fails  # without OPENAI_API_KEY, only empty+placeholder is enforced above
 
 
@@ -84,6 +162,13 @@ def main() -> None:
         {"prompt": "hello", "dl": "en", "tl": "de", "tag": "D_vague", "expect_words": False},
         {"prompt": "restaurant mix español und English Wörter", "dl": "en", "tl": "es", "tag": "D_mixed_lang", "expect_words": True},
         {"prompt": "words for the airport", "dl": "en", "tl": "es", "tag": "D_no_level", "expect_words": True},
+
+        # E — niche specificity quality (must not degrade into generic filler)
+        {"prompt": "Car parts words", "dl": "en", "tl": "de", "tag": "E_car_parts_de", "expect_words": True, "expect_niche_quality": True, "niche_tokens": ["car", "vehicle"]},
+        {"prompt": "Words for flower experts", "dl": "en", "tl": "de", "tag": "E_flower_experts_de", "expect_words": True, "expect_niche_quality": True, "niche_tokens": ["flower", "flor"]},
+        {"prompt": "Flower vocabulary", "dl": "en", "tl": "de", "tag": "E_flower_vocab_de", "expect_words": True, "expect_niche_quality": True, "niche_tokens": ["flower"]},
+        {"prompt": "Weather vocabulary", "dl": "en", "tl": "de", "tag": "E_weather_vocab_de", "expect_words": True, "expect_niche_quality": True, "niche_tokens": ["weather"]},
+        {"prompt": "Bike parts words", "dl": "en", "tl": "de", "tag": "E_bike_parts_de", "expect_words": True, "expect_niche_quality": True, "niche_tokens": ["bike"]},
     ]
 
     results: list[dict] = []

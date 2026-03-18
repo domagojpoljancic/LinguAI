@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -38,7 +39,11 @@ def _db_path() -> Path:
 
 DB_PATH = None  # Resolved at runtime via _db_path() so ingestion can override
 
-_CONN: sqlite3.Connection | None = None
+# SQLite connections are thread-bound by default in Python's sqlite3 module.
+# This module is used in server runtime with concurrent request threads, so we
+# must never reuse a connection across threads. We also avoid global connection
+# caching and instead create a fresh connection per retrieval call.
+_DB_INIT_LOCK = threading.Lock()
 
 # CEFR ordering for level filtering / ranking
 CEFR_ORDER: Sequence[str] = ("A1", "A2", "B1", "B2", "C1", "C2")
@@ -54,19 +59,15 @@ def _level_rank(level: str | None) -> int:
 
 def _ensure_conn() -> sqlite3.Connection:
     """Get or create the SQLite connection, ensure schema + seed exists."""
-    global _CONN
-    if _CONN is not None:
-        return _CONN
-
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-
-    ensure_schema_version(conn)
-    _seed_if_empty(conn)
-
-    _CONN = conn
+    # Ensure schema/seed are safe under concurrency (multiple threads may call
+    # retrieve_candidates concurrently in server runtime).
+    with _DB_INIT_LOCK:
+        ensure_schema_version(conn)
+        _seed_if_empty(conn)
     return conn
 
 
@@ -373,41 +374,44 @@ def retrieve_candidates(
             situation_first = 1
         return (situation_first, -score, lvl, text)
 
-    final_pairs = sorted(all_selected, key=_rank_key)
+    try:
+        final_pairs = sorted(all_selected, key=_rank_key)
 
-    words = [{"default": r["default_text"], "target": r["target_text"]} for r, _ in final_pairs]
-    phases = [str(phase) for _, phase in final_pairs]
-    stats: Dict[str, object] = {
-        "primary_topic": primary_topic,
-        "widened_topics": widened_topics,
-        "primary_candidate_count": primary_candidate_count,
-        "widened_candidate_count": widened_candidate_count,
-        "duplicate_count": duplicate_count,
-        "final_count": len(words),
-        "used_fallback_source": fallback_used,
-        "partial": len(words) < max_items,
-    }
+        words = [{"default": r["default_text"], "target": r["target_text"]} for r, _ in final_pairs]
+        phases = [str(phase) for _, phase in final_pairs]
+        stats: Dict[str, object] = {
+            "primary_topic": primary_topic,
+            "widened_topics": widened_topics,
+            "primary_candidate_count": primary_candidate_count,
+            "widened_candidate_count": widened_candidate_count,
+            "duplicate_count": duplicate_count,
+            "final_count": len(words),
+            "used_fallback_source": fallback_used,
+            "partial": len(words) < max_items,
+        }
 
-    debug_list: Optional[List[Dict[str, object]]] = None
-    if include_debug and final_pairs:
-        debug_list = []
-        for row, phase in final_pairs:
-            row_topic = (row["topic"] or "").strip().lower()
-            matched = row_topic == primary_topic
-            from_widened = phase == "widened"
-            reason = "primary_topic" if matched and not from_widened else ("widened_topic" if from_widened else "primary_topic")
-            debug_list.append({
-                "default": row["default_text"],
-                "target": row["target_text"],
-                "topic": row["topic"],
-                "level": row["level"],
-                "source_type": row["source_type"],
-                "score": float(row["score"] or 0.0),
-                "matched_primary_topic": matched,
-                "from_widened": from_widened,
-                "selection_reason": reason,
-            })
-    return words, stats, debug_list, phases
+        debug_list: Optional[List[Dict[str, object]]] = None
+        if include_debug and final_pairs:
+            debug_list = []
+            for row, phase in final_pairs:
+                row_topic = (row["topic"] or "").strip().lower()
+                matched = row_topic == primary_topic
+                from_widened = phase == "widened"
+                reason = "primary_topic" if matched and not from_widened else ("widened_topic" if from_widened else "primary_topic")
+                debug_list.append({
+                    "default": row["default_text"],
+                    "target": row["target_text"],
+                    "topic": row["topic"],
+                    "level": row["level"],
+                    "source_type": row["source_type"],
+                    "score": float(row["score"] or 0.0),
+                    "matched_primary_topic": matched,
+                    "from_widened": from_widened,
+                    "selection_reason": reason,
+                })
+        return words, stats, debug_list, phases
+    finally:
+        conn.close()
 
 
 def persist_ai_fallback_pairs(

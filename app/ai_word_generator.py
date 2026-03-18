@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
 from app.config import OPENAI_API_KEY
+from app.config import openai_httpx_client
 from app.prompts.word_generation import (
     SYSTEM_INSTRUCTIONS,
     WordGenerationContext,
@@ -196,7 +197,11 @@ def generate_word_pairs(ctx: WordGenerationContext, request_id: str = "") -> Wor
     try:
         from openai import OpenAI
 
-        client = OpenAI(api_key=OPENAI_API_KEY, timeout=WORD_GEN_TIMEOUT)
+        client = OpenAI(
+            api_key=OPENAI_API_KEY,
+            timeout=WORD_GEN_TIMEOUT,
+            http_client=openai_httpx_client(timeout=WORD_GEN_TIMEOUT),
+        )
         resp = client.responses.create(
             model=MODEL,
             instructions=SYSTEM_INSTRUCTIONS,
