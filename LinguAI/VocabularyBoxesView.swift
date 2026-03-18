@@ -146,7 +146,7 @@ struct VocabularyBoxesView: View {
     #endif
     @State private var newBoxSheetDetent: PresentationDetent = .height(ModalStyle.newBoxSheetHeight)
     @State private var newBoxTargetLanguageCode: String = NewBoxTargetLanguages.noSelectionCode
-    @State private var isShowingAddWithAIAlert = false
+    @State private var isShowingAISuggestSheet = false
 
     var body: some View {
         ZStack {
@@ -203,6 +203,12 @@ struct VocabularyBoxesView: View {
         .sheet(isPresented: $isShowingHowTo) {
             howToSheet
         }
+        .sheet(isPresented: $isShowingAISuggestSheet) {
+            AISuggestSheetContent()
+                .presentationCornerRadius(ModalStyle.cornerRadius)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
         .alert("Delete box?", isPresented: $isShowingDeleteConfirmation) {
             Button("Delete", role: .destructive) {
                 if let offsets = pendingDeleteOffsets {
@@ -237,7 +243,7 @@ struct VocabularyBoxesView: View {
                 SplitPillDivider()
 
                 Button {
-                    isShowingAddWithAIAlert = true
+                    isShowingAISuggestSheet = true
                 } label: {
                     Label("AI Suggest", systemImage: "sparkles")
                         .font(.system(.subheadline, design: .rounded).weight(.semibold))
@@ -246,11 +252,6 @@ struct VocabularyBoxesView: View {
                 }
                 .frame(minHeight: 44)
             }
-        }
-        .alert("Coming Soon", isPresented: $isShowingAddWithAIAlert) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("Generate personalized vocabulary lists with AI.")
         }
     }
 
@@ -641,6 +642,431 @@ struct VocabularyBoxesView: View {
         withAnimation(.easeOut(duration: 0.25)) {
             isPresentingBoxEditor = false
         }
+    }
+}
+
+// MARK: - AI Suggest overlay (prompt entry sheet)
+
+private enum AISuggestUIState: Equatable {
+    case idle
+    case thinking
+    case success
+    case retryableFailure(message: String)
+
+    var submitButtonTitle: String {
+        if case .retryableFailure = self { return "Try again" }
+        return "Generate suggestions"
+    }
+}
+
+private struct AISuggestSheetContent: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \VocabularyBox.name) private var boxes: [VocabularyBox]
+
+    @State private var promptText = ""
+    @State private var selectedTargetLanguageCode: String = NewBoxTargetLanguages.options.first?.code ?? "de"
+    @State private var uiState: AISuggestUIState = .idle
+    /// Idempotency: reuse same requestId when retrying same payload; new requestId when payload changes.
+    @State private var lastRequestId: String?
+    @State private var lastPayloadSignature: String?
+    @FocusState private var isPromptFocused: Bool
+
+    private var trimmedPrompt: String {
+        promptText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isSubmitDisabled: Bool {
+        trimmedPrompt.isEmpty || uiState == .thinking
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                switch uiState {
+                case .idle, .retryableFailure:
+                    promptEntryContent
+                case .thinking:
+                    thinkingContent
+                case .success:
+                    successContent
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(.systemBackground))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text("AI Suggest")
+                        .font(.system(.headline, design: .rounded).weight(.bold))
+                }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                    .font(.system(.body, design: .rounded))
+                    .foregroundStyle(ModalStyle.linguAIGreen)
+                }
+            }
+        }
+    }
+
+    // MARK: - Prompt entry (idle / retry)
+
+    private var promptEntryContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "sparkles")
+                            .font(.system(.title3, design: .rounded).weight(.medium))
+                            .foregroundStyle(ModalStyle.linguAIGreen)
+                        Text("Suggest vocabulary")
+                            .font(.system(.headline, design: .rounded).weight(.bold))
+                            .foregroundStyle(.primary)
+                    }
+                    Text("Describe what you want to learn. I’ll suggest words and phrases for a new box.")
+                        .font(.system(.subheadline, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.bottom, 16)
+
+                if case .retryableFailure(let message) = uiState {
+                    retryBanner(message: message)
+                        .padding(.bottom, 12)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("What do you need?")
+                        .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    promptInputField
+                }
+
+                targetLanguageSection
+                    .padding(.top, 12)
+                    // Prevent chips from being visually covered by the bottom CTA inset on
+                    // first paint (some iOS devices require a layout pass to resolve safe-area overlap).
+                    .padding(.bottom, 56)
+            }
+            .padding(ModalStyle.edgePadding)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            primarySubmitButton
+        }
+    }
+
+    private func retryBanner(message: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.body)
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.system(.subheadline, design: .rounded))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    /// Target language chip row: label + horizontal scroll of pills. Uses fixed height and clear styling so chips are never clipped and remain readable in light/dark mode.
+    private var targetLanguageSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Target language")
+                .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(NewBoxTargetLanguages.options, id: \.code) { option in
+                        targetLanguageChip(
+                            name: option.name,
+                            code: option.code,
+                            isSelected: selectedTargetLanguageCode == option.code
+                        )
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            .frame(height: 52)
+        }
+    }
+
+    private func targetLanguageChip(name: String, code: String, isSelected: Bool) -> some View {
+        let isGerman = code == "de"
+        return Button {
+            if isGerman { selectedTargetLanguageCode = code }
+        } label: {
+            Text(name)
+                .font(.system(.subheadline, design: .rounded).weight(.medium))
+                .foregroundStyle(
+                    isSelected
+                        ? Color.white
+                        : (isGerman ? Color.primary : Color.secondary)
+                )
+                .padding(.horizontal, 18)
+                .frame(height: 44)
+                .background(
+                    Capsule()
+                        .fill(
+                            isSelected
+                                ? ModalStyle.linguAIGreen
+                                : Color(.tertiarySystemFill)
+                        )
+                )
+                .overlay(
+                    Capsule()
+                        .strokeBorder(
+                            isSelected ? Color.clear : Color(.separator),
+                            lineWidth: 1
+                        )
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(!isGerman)
+    }
+
+    private var primarySubmitButton: some View {
+        Button {
+            submitPrompt()
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                Text(uiState.submitButtonTitle)
+                    .font(.system(.body, design: .rounded).weight(.semibold))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+            .background(isSubmitDisabled ? Color(.tertiarySystemFill) : ModalStyle.linguAIGreen)
+            .foregroundStyle(isSubmitDisabled ? Color.secondary : Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .frame(minHeight: 50)
+        .disabled(isSubmitDisabled)
+        .padding(.horizontal, ModalStyle.edgePadding)
+        .padding(.top, 16)
+        .padding(.bottom, 8)
+        .background(Color(.systemBackground))
+        .overlay(alignment: .top) {
+            Divider()
+        }
+    }
+
+    // MARK: - Thinking (loading)
+
+    private var thinkingContent: some View {
+        VStack(spacing: 24) {
+            Spacer(minLength: 0)
+            thinkingIndicator
+            Text("Thinking")
+                .font(.system(.title3, design: .rounded).weight(.semibold))
+                .foregroundStyle(.primary)
+            Text("Creating your vocabulary box…")
+                .font(.system(.subheadline, design: .rounded))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var thinkingIndicator: some View {
+        TimelineView(.animation) { context in
+            let angle = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1) * 360
+            ZStack {
+                Circle()
+                    .stroke(ModalStyle.linguAIGreen.opacity(0.25), lineWidth: 4)
+                    .frame(width: 56, height: 56)
+                Circle()
+                    .trim(from: 0, to: 0.7)
+                    .stroke(ModalStyle.linguAIGreen, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                    .frame(width: 56, height: 56)
+                    .rotationEffect(.degrees(-90))
+                    .rotationEffect(.degrees(angle))
+            }
+        }
+    }
+
+    // MARK: - Success
+
+    private var successContent: some View {
+        VStack(spacing: 24) {
+            Spacer(minLength: 0)
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 64))
+                .foregroundStyle(ModalStyle.linguAIGreen)
+            Text("Everything is ready")
+                .font(.system(.title2, design: .rounded).weight(.bold))
+                .foregroundStyle(.primary)
+            Text("Your box is ready. Close this sheet to see it in your list.")
+                .font(.system(.subheadline, design: .rounded))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+            Spacer(minLength: 0)
+            Button {
+                dismiss()
+            } label: {
+                Text("Done")
+                    .font(.system(.body, design: .rounded).weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(ModalStyle.linguAIGreen)
+                    .foregroundColor(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, ModalStyle.edgePadding)
+            .padding(.bottom, 24)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var promptInputField: some View {
+        TextField("e.g. A1 restaurant words in German, doctor visit phrases, business Spanish…", text: $promptText, axis: .vertical)
+            .textFieldStyle(.plain)
+            .font(.system(.body, design: .rounded))
+            .lineLimit(4...8)
+            .padding(12)
+            .frame(minHeight: 110, alignment: .topLeading)
+            .background(Color(.secondarySystemGroupedBackground))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(
+                        isPromptFocused ? ModalStyle.linguAIGreen : Color.primary.opacity(0.12),
+                        lineWidth: isPromptFocused ? 1.5 : 1
+                    )
+            )
+            .focused($isPromptFocused)
+    }
+
+    private func submitPrompt() {
+        let prompt = trimmedPrompt
+        guard !prompt.isEmpty, uiState != .thinking else { return }
+
+        uiState = .thinking
+        let request = buildRequest(prompt: prompt)
+
+        Task {
+            let result: Result<GenerateBoxesResponse, Error>
+            do {
+                let response = try await callGenerateBoxes(request: request)
+                result = .success(response)
+            } catch {
+                result = .failure(error)
+            }
+
+            await MainActor.run {
+                handleResponse(result, prompt: prompt)
+            }
+        }
+    }
+
+    private func buildRequest(prompt: String) -> GenerateBoxesRequest {
+        let existingBoxes: [ExistingBoxRequest] = boxes.map { box in
+            ExistingBoxRequest(
+                boxId: box.persistentModelID.hashValue.description,
+                boxName: box.name,
+                completionPercent: box.progressValue * 100,
+                words: box.words.map { w in
+                    WordInBoxRequest(default: w.primaryText, target: w.targetText)
+                }
+            )
+        }
+        let payloadSignature = payloadSignatureForIdempotency(prompt: prompt, targetLanguage: selectedTargetLanguageCode, boxes: boxes)
+        let requestId: String
+        if payloadSignature == lastPayloadSignature, let id = lastRequestId {
+            requestId = id
+        } else {
+            requestId = UUID().uuidString
+            lastRequestId = requestId
+            lastPayloadSignature = payloadSignature
+        }
+        return GenerateBoxesRequest(
+            requestId: requestId,
+            customerId: GenerateBoxesAPI.customerId,
+            prompt: prompt,
+            defaultLanguage: "en",
+            targetLanguage: selectedTargetLanguageCode,
+            existingBoxes: existingBoxes
+        )
+    }
+
+    /// Deterministic fingerprint for (prompt, targetLanguage, existingBoxes) so we reuse requestId for exact retries.
+    private func payloadSignatureForIdempotency(prompt: String, targetLanguage: String, boxes: [VocabularyBox]) -> String {
+        let boxPart = boxes
+            .sorted { $0.persistentModelID.hashValue < $1.persistentModelID.hashValue }
+            .map { "\($0.persistentModelID.hashValue)|\($0.name)|\($0.words.count)" }
+            .joined(separator: "|")
+        return "\(prompt)|\(targetLanguage)|\(boxes.count)|\(boxPart)"
+    }
+
+    private func handleResponse(_ result: Result<GenerateBoxesResponse, Error>, prompt: String) {
+        switch result {
+        case .success(let response):
+            if response.status == GenerateBoxesStatus.generatedPlaceholder, !response.boxes.isEmpty {
+                createBoxesFromResponse(response)
+                uiState = .success
+            } else if response.status == GenerateBoxesStatus.generatedPlaceholder, response.boxes.isEmpty {
+                uiState = .retryableFailure(message: response.userMessage ?? "No vocabulary was generated. Try a different prompt.")
+            } else if response.status == GenerateBoxesStatus.irrelevantRequest {
+                uiState = .retryableFailure(message: response.userMessage ?? "That doesn’t seem to be about vocabulary. Try describing words or phrases you want to learn.")
+            } else if response.status == GenerateBoxesStatus.insufficientConfidence {
+                uiState = .retryableFailure(message: response.userMessage ?? "I couldn’t generate a good list. Try rephrasing your prompt.")
+            } else {
+                uiState = .retryableFailure(message: response.userMessage ?? "Something went wrong. Please try again.")
+            }
+        case .failure(let error):
+            let message: String
+            if let serviceError = error as? GenerateBoxesServiceError {
+                switch serviceError {
+                case .idempotencyConflict:
+                    lastRequestId = nil
+                    lastPayloadSignature = nil
+                    message = "This request was already used with different options. Please start a new generation."
+                case .networkError:
+                    message = "Connection failed. Check your network and try again."
+                case .httpError(let code):
+                    message = code == 0 ? "Request failed." : "Server error. Please try again."
+                case .decodingError:
+                    message = "Invalid response. Please try again."
+                case .invalidURL:
+                    message = "Invalid configuration. Please try again."
+                }
+            } else {
+                message = "Something went wrong. Please try again."
+            }
+            uiState = .retryableFailure(message: message)
+        }
+    }
+
+    private func createBoxesFromResponse(_ response: GenerateBoxesResponse) {
+        let defaultLang = response.defaultLanguage
+        let targetLang = response.targetLanguage
+        for genBox in response.boxes {
+            let newBox = VocabularyBox(
+                name: genBox.boxName,
+                targetLanguageCode: targetLang,
+                primaryLanguageCode: defaultLang
+            )
+            modelContext.insert(newBox)
+            for pair in genBox.words {
+                let word = BoxWord(
+                    primaryText: pair.default,
+                    targetText: pair.target,
+                    box: newBox
+                )
+                modelContext.insert(word)
+            }
+        }
+        try? modelContext.save()
     }
 }
 
