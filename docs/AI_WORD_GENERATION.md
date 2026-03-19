@@ -73,9 +73,9 @@ Returns `ValidatedWordPair` with `source="ai_generated"`.
 
 ## Graph / debug
 
-- LangGraph unchanged (no new node).
-- `/debug/graph/ascii`: full node list includes `decide_retrieval_route`; state summary includes AI fields; footer describes `ai_word_generator`.
-- `/debug/graph/render`: Mermaid shows `decide_retrieval_route` and dashed edge to AI module subgraph.
+- LangGraph adds an early `request_understanding` node (relevance + topic + route hint) before `topic_identification`.
+- `/debug/graph/ascii`: full node list includes `request_understanding` and `decide_retrieval_route`; state summary includes AI fields; footer describes `ai_word_generator`.
+- `/debug/graph/render`: Mermaid shows `request_understanding` and `decide_retrieval_route` before the dashed edge to the AI word-generation module.
 
 ## Evaluation
 

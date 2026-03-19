@@ -31,6 +31,10 @@ class BoxWorkflowState(TypedDict, total=False):
     topic_reason: str  # optional reason from AI classifier
     topic_keywords: List[str]  # optional keywords for retrieval/situation (e.g. ["football"], ["labor", "birth"])
     situation_label: str  # short situation description (e.g. "football vocabulary", "at the airport")
+    subtopic: str  # optional more specific niche (may be omitted when null)
+    understanding_confidence: float  # 0–1 confidence from request_understanding
+    understanding_reason: str  # short reason phrase from request_understanding
+    level_hint: str  # optional CEFR hint from request_understanding (not necessarily applied)
     retrieval_route: str  # "db_first" | "ai_first" | "mixed"
     retrieval_route_reason: str
     retrieval_route_confidence: float
@@ -48,6 +52,7 @@ class BoxWorkflowState(TypedDict, total=False):
     persist_ai_fallback_pairs: List[dict]  # [{default, target}] for BackgroundTasks; not in API JSON
     async_persist_queued: bool
     _ai_generation_attempted: bool  # internal; graph merge
+    _request_understanding_applied: bool  # internal; request understanding is used to skip old nodes
 
     # ---- Internal pipeline keys (must be preserved across LangGraph nodes) ----
     # LangGraph retains only keys declared in the State schema. These are produced/consumed

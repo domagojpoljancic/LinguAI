@@ -513,6 +513,11 @@ def topic_identification(state: BoxWorkflowState) -> dict:
     Returns topic key from internal enum, confidence 0–1, source (deterministic | ai), and optional reason.
     Downstream retrieval uses topic key; box display name is derived via TOPIC_TO_BOX_NAME.
     """
+    # If the early request-understanding step already produced confident structured
+    # topic fields, skip this node to avoid inconsistent multi-LLM decisions.
+    if state.get("_request_understanding_applied") is True:
+        return {}
+
     request_id = state.get("request_id", "")
     prompt = (state.get("prompt") or "").strip()
     d_lang, t_lang = _resolve_language_pair(state)
@@ -593,6 +598,10 @@ def decide_retrieval_route(state: BoxWorkflowState) -> dict:
       - retrieval_route_reason: short explanation
       - retrieval_route_confidence: 0–1
     """
+    # Keep the early structured route hint stable when available.
+    if state.get("_request_understanding_applied") is True and state.get("retrieval_route"):
+        return {}
+
     request_id = state.get("request_id", "")
     topic = (state.get("topic") or "").strip().lower() or "general"
     topic_conf = float(state.get("topic_confidence") or 0.0)

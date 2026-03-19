@@ -135,6 +135,7 @@ def _get_drawable_graph():
 
 # Known nodes: role and data flow (best-effort from code structure; not runtime trace).
 _DEBUG_NODE_ROLES = {
+    "request_understanding": "early structured intent (LLM)",
     "relevance_check": "gate (LLM)",
     "level_resolution": "CEFR explicit or LLM infer",
     "topic_identification": "deterministic keywords or AI classifier",
@@ -147,6 +148,25 @@ _DEBUG_NODE_ROLES = {
     "async_persist_ai_words": "marks queue; HTTP layer runs BackgroundTasks after response",
 }
 _DEBUG_NODE_IO = {
+    "request_understanding": {
+        "consumes": ["prompt", "request_id", "default_language", "target_language"],
+        "produces": [
+            "is_relevant",
+            "status",
+            "relevance_user_message",
+            "user_message",
+            "topic",
+            "subtopic",
+            "topic_keywords",
+            "situation_label",
+            "level_hint",
+            "understanding_confidence",
+            "understanding_reason",
+            "retrieval_route",
+            "retrieval_route_reason",
+            "retrieval_route_confidence",
+        ],
+    },
     "relevance_check": {
         "consumes": ["prompt", "request_id"],
         "produces": ["is_relevant", "relevance_user_message", "status", "user_message"],
@@ -194,6 +214,7 @@ _DEBUG_STATE_REQUEST = ["request_id", "customer_id", "prompt", "default_language
 _DEBUG_STATE_WORKFLOW = [
     "is_relevant", "relevance_user_message", "level", "level_source",
     "topic", "topic_confidence", "topic_source", "topic_reason", "topic_keywords", "situation_label",
+    "subtopic", "understanding_confidence", "understanding_reason", "level_hint",
     "retrieval_route", "retrieval_route_reason", "retrieval_route_confidence",
     "db_candidate_count", "db_strong_candidate_count",
     "ai_used", "ai_candidate_count", "ai_validated_count", "ai_failure_reason",
@@ -243,6 +264,7 @@ def _get_flow_order(drawable, compiled_graph) -> list[str]:
 
 # Known graph structure for "hands off to" (conditionals not always in drawable edges).
 _DEBUG_HANDS_OFF = {
+    "request_understanding": ["topic_identification (or relevance_check re-validate)", "END (if high-confidence irrelevant)"],
     "relevance_check": ["topic_identification", "END (if not relevant)"],
     "topic_identification": ["decide_retrieval_route"],
     "decide_retrieval_route": ["level_resolution"],
@@ -282,6 +304,11 @@ def _introspect_node_callable(runnable) -> Optional[object]:
 # source for _get_llm/ChatOpenAI; delegating helpers like classify_with_ai / generate_word_pairs
 # caused an early return with "AI calls: 0" before name-based fixes could run.)
 _DEBUG_NODE_AI_METADATA: dict[str, dict[str, str]] = {
+    "request_understanding": {
+        "ai_calls": "0 or 1× Chat Completions (structured JSON)",
+        "model": "OPENAI_MODEL (app.ai_request_understanding + langchain_openai.ChatOpenAI)",
+        "mode": "Called in request_understanding node (skipped on empty prompt / exception paths)",
+    },
     "relevance_check": {
         "ai_calls": "1× Chat Completions per run",
         "model": "OPENAI_MODEL (default gpt-4o-mini); ChatOpenAI + OPENAI_REQUEST_TIMEOUT (app.box_workflow._get_llm)",
@@ -589,9 +616,10 @@ def _build_app_flow_mermaid() -> str:
     F --> BG[BackgroundTasks: persist_ai_fallback_pairs]
   end
   subgraph workflow[" Box workflow same as graph.py "]
-    W1["relevance_check<br/>1x Chat Completions"] --> W2{relevant?}
-    W2 -->|no| WEND1[END]
-    W2 -->|yes| W3["topic_identification<br/>keywords or 0-1x Chat Completions"]
+    W0["request_understanding<br/>1x Chat Completions (structured intent)"] --> W1{relevant?}
+    W1 -->|no (or low confidence)| W2["relevance_check<br/>1x Chat Completions (legacy gate)"]
+    W1 -->|yes (high confidence)| W3["topic_identification<br/>keywords or 0-1x Chat Completions"]
+    W2 --> W3
     W3 --> W3b[decide_retrieval_route]
     W3b --> W4["level_resolution<br/>regex CEFR or 0-1x Chat Completions"]
     W4 --> W5[db_retrieval_attempt]

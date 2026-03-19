@@ -27,11 +27,13 @@ from app.box_workflow import (
     async_persist_ai_words,
     route_after_relevance,
 )
+from app.ai_request_understanding import request_understanding, route_after_request_understanding
 
 
 def create_graph():
     """Build and compile the box-generation workflow graph."""
     graph = StateGraph(BoxWorkflowState)
+    graph.add_node("request_understanding", request_understanding)
     graph.add_node("relevance_check", relevance_check)
     graph.add_node("topic_identification", topic_identification)
     graph.add_node("decide_retrieval_route", decide_retrieval_route)
@@ -43,7 +45,8 @@ def create_graph():
     graph.add_node("box_creation_finalize", box_creation_finalize)
     graph.add_node("async_persist_ai_words", async_persist_ai_words)
 
-    graph.set_entry_point("relevance_check")
+    graph.set_entry_point("request_understanding")
+    graph.add_conditional_edges("request_understanding", route_after_request_understanding)
     graph.add_conditional_edges("relevance_check", route_after_relevance)
     graph.add_edge("topic_identification", "decide_retrieval_route")
     graph.add_edge("decide_retrieval_route", "level_resolution")

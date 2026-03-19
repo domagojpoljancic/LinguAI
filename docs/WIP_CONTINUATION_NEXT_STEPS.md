@@ -12,8 +12,8 @@
 
 ```
 Start
-  → relevance_check (LLM: relevant / not)
-  → [if not relevant] END
+  → request_understanding (LLM: structured intent JSON)
+  → [if not relevant] END (or legacy relevance_check re-validation if confidence low)
   → topic_identification (keywords + typo/fuzzy OR Chat Completions classifier)
   → decide_retrieval_route (db_first | ai_first | mixed — deterministic)
   → level_resolution (regex CEFR OR LLM infer)
@@ -39,6 +39,7 @@ Start
 
 | Step | API | When |
 |------|-----|------|
+| **request_understanding** | Chat Completions (`ChatOpenAI`) | First; produces `is_relevant/topic/topic_keywords/situation_label/route_hint/level_hint` as structured JSON |
 | **relevance_check** | Chat Completions (`_get_llm`) | Every relevant path |
 | **topic_identification** | Chat Completions (`ai_topic_classifier`) | When deterministic topic confidence low or general |
 | **level_resolution** | Chat Completions | When no A1–C2 in prompt |
@@ -51,6 +52,8 @@ Start
 ## B. What Was Just Implemented
 
 - **Routing:** Topic + confidence + prompt keywords (sports, weather, landlord, etc.) → db_first / ai_first / mixed.
+- **Early request understanding:** `request_understanding` runs first and produces `is_relevant`, `topic`, optional `subtopic`, `situation_label`, `topic_keywords`, `route_hint`, optional `level_hint`, plus `confidence` and `reason` (structured JSON).
+- **Coexistence / backward compatibility:** for high-confidence relevant inputs, downstream legacy `topic_identification` / `decide_retrieval_route` are skipped via `_request_understanding_applied`; for low-confidence cases it falls back to the legacy `relevance_check` path.
 - **AI word gen:** Structured pairs, single-word validation, expanded language pairs (8 codes, distinct pairs).
 - **Merge:** Route-specific ordering, dedupe, `final_mix_strategy` / debug fields on state.
 - **Async persistence:** `persist_ai_fallback_pairs` after response via `BackgroundTasks`; `source_type=ai_fallback`; INSERT OR IGNORE.
@@ -66,6 +69,7 @@ Start
 - **SQLite thread-safety (server path):** removed global cached SQLite connection reuse; each retrieval call uses its own connection (and closes it), so concurrent FastAPI threads don’t crash.
 - **Relevance false negatives:** added a narrow fast-path in `relevance_check` for short vocabulary-intent prompts (e.g. `Basketball`, `Weather`, `Flowers`, `Cars`) and landlord-like intent.
 - **Fake-success generic filler quality gate:** added a final integrity gate in `box_creation_finalize()` to prevent “niche” box names from returning mostly generic daily/basic filler.
+- **Early request understanding node:** added `request_understanding` as the real graph entry point to consolidate structured intent (relevance/topic/keywords/route hint/level hint) before legacy nodes.
 
 ---
 
