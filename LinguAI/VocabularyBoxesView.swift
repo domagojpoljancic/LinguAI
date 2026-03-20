@@ -6,6 +6,7 @@
 import SwiftUI
 import SwiftData
 import Translation
+import Foundation
 
 // MARK: - Shared modal aesthetic & LinguAI branding
 private enum ModalStyle {
@@ -670,6 +671,16 @@ private struct AISuggestSheetContent: View {
     /// Idempotency: reuse same requestId when retrying same payload; new requestId when payload changes.
     @State private var lastRequestId: String?
     @State private var lastPayloadSignature: String?
+    // Metadata from backend (kept internal for diagnostics / future UI improvements).
+    @State private var lastResponseStatus: String?
+    @State private var lastTopic: String?
+    @State private var lastTopicSource: String?
+    @State private var lastTopicConfidence: Double?
+    @State private var lastTopicReason: String?
+    @State private var lastTopicKeywords: [String]?
+    @State private var lastSituationLabel: String?
+    @State private var lastResolvedLevel: String?
+    @State private var lastResolvedLevelSource: String?
     @FocusState private var isPromptFocused: Bool
 
     private var trimmedPrompt: String {
@@ -737,6 +748,13 @@ private struct AISuggestSheetContent: View {
                         .padding(.bottom, 12)
                 }
 
+#if DEBUG
+                if lastResponseStatus != nil {
+                    backendDebugDiagnostics
+                        .padding(.bottom, 12)
+                }
+#endif
+
                 VStack(alignment: .leading, spacing: 8) {
                     Text("What do you need?")
                         .font(.system(.subheadline, design: .rounded).weight(.semibold))
@@ -798,16 +816,15 @@ private struct AISuggestSheetContent: View {
     }
 
     private func targetLanguageChip(name: String, code: String, isSelected: Bool) -> some View {
-        let isGerman = code == "de"
         return Button {
-            if isGerman { selectedTargetLanguageCode = code }
+            selectedTargetLanguageCode = code
         } label: {
             Text(name)
                 .font(.system(.subheadline, design: .rounded).weight(.medium))
                 .foregroundStyle(
                     isSelected
                         ? Color.white
-                        : (isGerman ? Color.primary : Color.secondary)
+                        : Color.secondary
                 )
                 .padding(.horizontal, 18)
                 .frame(height: 44)
@@ -828,7 +845,6 @@ private struct AISuggestSheetContent: View {
                 )
         }
         .buttonStyle(.plain)
-        .disabled(!isGerman)
     }
 
     private var primarySubmitButton: some View {
@@ -910,6 +926,13 @@ private struct AISuggestSheetContent: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
+
+#if DEBUG
+            if lastResponseStatus != nil {
+                backendDebugDiagnostics
+                    .padding(.horizontal, 24)
+            }
+#endif
             Spacer(minLength: 0)
             Button {
                 dismiss()
@@ -970,17 +993,27 @@ private struct AISuggestSheetContent: View {
     }
 
     private func buildRequest(prompt: String) -> GenerateBoxesRequest {
+        // Keep request payload deterministic for idempotency retries.
         let existingBoxes: [ExistingBoxRequest] = boxes.map { box in
-            ExistingBoxRequest(
+            let sortedWords = box.words.sorted { a, b in
+                if a.createdAt != b.createdAt { return a.createdAt < b.createdAt }
+                return a.uuid.uuidString < b.uuid.uuidString
+            }
+            return ExistingBoxRequest(
                 boxId: box.persistentModelID.hashValue.description,
                 boxName: box.name,
                 completionPercent: box.progressValue * 100,
-                words: box.words.map { w in
+                words: sortedWords.map { w in
                     WordInBoxRequest(default: w.primaryText, target: w.targetText)
                 }
             )
         }
-        let payloadSignature = payloadSignatureForIdempotency(prompt: prompt, targetLanguage: selectedTargetLanguageCode, boxes: boxes)
+
+        let payloadSignature = payloadSignatureForIdempotency(
+            prompt: prompt,
+            targetLanguage: selectedTargetLanguageCode,
+            existingBoxes: existingBoxes
+        )
         let requestId: String
         if payloadSignature == lastPayloadSignature, let id = lastRequestId {
             requestId = id
@@ -1000,28 +1033,101 @@ private struct AISuggestSheetContent: View {
     }
 
     /// Deterministic fingerprint for (prompt, targetLanguage, existingBoxes) so we reuse requestId for exact retries.
-    private func payloadSignatureForIdempotency(prompt: String, targetLanguage: String, boxes: [VocabularyBox]) -> String {
-        let boxPart = boxes
-            .sorted { $0.persistentModelID.hashValue < $1.persistentModelID.hashValue }
-            .map { "\($0.persistentModelID.hashValue)|\($0.name)|\($0.words.count)" }
-            .joined(separator: "|")
-        return "\(prompt)|\(targetLanguage)|\(boxes.count)|\(boxPart)"
+    /// Uses a canonical encoded representation so requestId reuse matches the backend's "exact payload" semantics.
+    private func payloadSignatureForIdempotency(
+        prompt: String,
+        targetLanguage: String,
+        existingBoxes: [ExistingBoxRequest]
+    ) -> String {
+        struct SignaturePayload: Codable {
+            let prompt: String
+            let targetLanguage: String
+            let defaultLanguage: String
+            let existingBoxes: [ExistingBoxRequest]
+        }
+
+        let signaturePayload = SignaturePayload(
+            prompt: prompt,
+            targetLanguage: targetLanguage,
+            defaultLanguage: "en",
+            existingBoxes: existingBoxes
+        )
+
+        if let data = try? JSONEncoder().encode(signaturePayload) {
+            // Keep it short-ish: signature doesn't need to be human readable.
+            return data.base64EncodedString()
+        }
+        return "\(prompt)|\(targetLanguage)|\(existingBoxes.count)"
+    }
+
+#if DEBUG
+    /// Minimal backend diagnostics for AI Suggest.
+    /// Only shown after receiving a backend response; excluded from release builds.
+    @ViewBuilder
+    private var backendDebugDiagnostics: some View {
+        if let status = lastResponseStatus {
+            let topicText = lastTopic ?? "—"
+            let levelText = lastResolvedLevel ?? "—"
+            let sourcesPart = (lastTopicSource != nil || lastResolvedLevelSource != nil)
+                ? " • sources: \(lastTopicSource ?? "—")/\(lastResolvedLevelSource ?? "—")"
+                : ""
+
+            Text("backend: \(status) • topic: \(topicText) • level: \(levelText)" + sourcesPart)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color(.tertiarySystemFill))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        } else {
+            EmptyView()
+        }
+    }
+#endif
+
+    private func storeMetadata(from response: GenerateBoxesResponse) {
+        lastResponseStatus = response.status
+        lastTopic = response.topic
+        lastTopicSource = response.topicSource
+        lastTopicConfidence = response.topicConfidence
+        lastTopicReason = response.topicReason
+        lastTopicKeywords = response.topicKeywords
+        lastSituationLabel = response.situationLabel
+        lastResolvedLevel = response.level
+        lastResolvedLevelSource = response.levelSource
     }
 
     private func handleResponse(_ result: Result<GenerateBoxesResponse, Error>, prompt: String) {
         switch result {
         case .success(let response):
-            if response.status == GenerateBoxesStatus.generatedPlaceholder, !response.boxes.isEmpty {
-                createBoxesFromResponse(response)
-                uiState = .success
-            } else if response.status == GenerateBoxesStatus.generatedPlaceholder, response.boxes.isEmpty {
-                uiState = .retryableFailure(message: response.userMessage ?? "No vocabulary was generated. Try a different prompt.")
+            storeMetadata(from: response)
+
+            if response.status == GenerateBoxesStatus.generatedPlaceholder {
+                if !response.boxes.isEmpty {
+                    createBoxesFromResponse(response)
+                    uiState = .success
+                } else {
+                    // Not a success case. Prompt stays editable.
+                    uiState = .retryableFailure(
+                        message: response.userMessage ?? "No vocabulary was generated from that. Try another prompt."
+                    )
+                }
+            } else if response.status == GenerateBoxesStatus.generationEmpty {
+                uiState = .retryableFailure(
+                    message: response.userMessage ?? "I couldn’t build a credible vocabulary box from that. Try again."
+                )
             } else if response.status == GenerateBoxesStatus.irrelevantRequest {
-                uiState = .retryableFailure(message: response.userMessage ?? "That doesn’t seem to be about vocabulary. Try describing words or phrases you want to learn.")
+                uiState = .retryableFailure(
+                    message: response.userMessage ?? "That doesn’t seem to be about vocabulary learning. Please rephrase your prompt."
+                )
             } else if response.status == GenerateBoxesStatus.insufficientConfidence {
-                uiState = .retryableFailure(message: response.userMessage ?? "I couldn’t generate a good list. Try rephrasing your prompt.")
+                uiState = .retryableFailure(
+                    message: response.userMessage ?? "I couldn’t generate a good box. Try rephrasing your prompt."
+                )
             } else {
-                uiState = .retryableFailure(message: response.userMessage ?? "Something went wrong. Please try again.")
+                uiState = .retryableFailure(
+                    message: response.userMessage ?? "Something went wrong. Please try again."
+                )
             }
         case .failure(let error):
             let message: String
@@ -1030,7 +1136,7 @@ private struct AISuggestSheetContent: View {
                 case .idempotencyConflict:
                     lastRequestId = nil
                     lastPayloadSignature = nil
-                    message = "This request was already used with different options. Please start a new generation."
+                    message = "This generation was already used with different options. Please start a new generation."
                 case .networkError:
                     message = "Connection failed. Check your network and try again."
                 case .httpError(let code):
@@ -1043,6 +1149,8 @@ private struct AISuggestSheetContent: View {
             } else {
                 message = "Something went wrong. Please try again."
             }
+            // Avoid stale backend metadata being shown after non-backend failures.
+            lastResponseStatus = nil
             uiState = .retryableFailure(message: message)
         }
     }
