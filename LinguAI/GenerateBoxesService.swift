@@ -95,6 +95,11 @@ struct GenerateBoxesResponse: Codable {
     let level: String?
     let levelSource: String?
     let topic: String?
+    let topicSource: String?
+    let topicConfidence: Double?
+    let topicReason: String?
+    let topicKeywords: [String]?
+    let situationLabel: String?
     let reachedBoxCreation: Bool
 }
 
@@ -104,6 +109,7 @@ enum GenerateBoxesStatus {
     static let generatedPlaceholder = "generated_placeholder"
     static let irrelevantRequest = "irrelevant_request"
     static let insufficientConfidence = "insufficient_confidence"
+    static let generationEmpty = "generation_empty"
 }
 
 // MARK: - Service
