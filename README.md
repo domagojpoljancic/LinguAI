@@ -1,243 +1,167 @@
 # LinguAI
-Silent, science-informed vocabulary practice—powered by a deterministic + agentic word-box backend.
 
-## What it is
-LinguAI is a SwiftUI iOS vocabulary app that turns learning into quiet, repeatable sessions using a **6-box Leitner system** and **silent spaced repetition**. You study what’s due and progress without managing schedules.
+*Level up your language skills.*
 
-When you want more material, LinguAI’s AI Suggest uses a **FastAPI + LangGraph** backend to generate a new vocabulary box that respects what you already know.
+LinguAI is a vocabulary learning product with two tightly connected parts:
+- a polished iOS study experience built around a silent 6-box Leitner system
+- an AI backend that generates high-quality vocabulary boxes from natural language prompts
 
-## Key features
-- **6-box Leitner + Mastered** progression (correct advances, incorrect resets)
-- **Silent SRS**: due selection runs behind the scenes—no timers, no “due counts”
-- **Two-pass session builder**: due-first, then future backfill for variety
-- **SwiftData persistence** with clean model relationships (boxes + cascaded words)
-- **Translation-assisted word entry** to keep adding words fast
-- **AI Suggest (optional)**: create a new vocabulary box from a prompt and your current progress
+![LinguAI app hero](/Users/domagoj.poljancic/.cursor/projects/Users-domagoj-poljancic-Library-CloudStorage-OneDrive-ZEAL-Documents-Cursor-projects-LinguAI/assets/image-65796862-53f9-4faf-b2b5-f05b4eb3b986.png)
+*LinguAI in action: home, box progress, and AI-generated vocabulary workflow.*
 
-## Why it’s interesting
-This project is interesting because it intentionally combines:
-- **Native iOS craft** (SwiftUI + SwiftData) with a learning loop that feels calm and controlled.
-- **Learning-science correctness**: Leitner progression and spaced repetition scheduling are implemented as first-class domain logic.
-- **Agentic backend with product-grade constraints**: the backend doesn’t just “talk”—it produces structured outputs, merges them with local retrieval, and supports mobile retries via idempotency (`409 Conflict` on payload mismatch).
+## 🚀 Overview
 
-The result is an experience that’s both premium for learners and technically disciplined for builders.
+LinguAI is designed for learners who want real progress without notification stress.
 
-## Architecture overview
-At a high level, LinguAI has two layers:
+- **What it does:** helps users learn and retain vocabulary through spaced repetition and topic-based study boxes
+- **Who it is for:** language learners who prefer short, focused daily practice over gamified pressure
+- **Why it is interesting:** it combines product UX thinking (frictionless study loop) with backend AI orchestration (reliable agent pipeline with idempotent mobile retries)
 
-### iOS app (learning loop, offline-first)
-- Implements the Leitner boxes and **silent SRS** locally.
-- Builds study sessions using a two-pass strategy:
-  1. due words first (oldest first)
-  2. backfill with future words (soonest next first + shuffle)
+This repository is intentionally full-stack:
+- **Frontend (FE):** SwiftUI + SwiftData iOS app in `LinguAI/`
+- **Backend (BE):** FastAPI + LangGraph AI system in `main.py` and `app/`
 
-### API (AI Suggest + box generation)
-- `POST /generate-boxes` accepts:
-  - your prompt (topic/intent)
-  - languages
-  - your existing boxes summarized as completion percent + known word pairs
-- The backend orchestrates a LangGraph workflow:
-  - relevance + intent gating
-  - topic identification
-  - learner level resolution (explicit CEFR or inferred)
-  - retrieval from a local vocabulary store (SQLite)
-  - optional OpenAI Responses generation when the curated store isn’t strong enough
-  - merge/dedupe/finalize
-- The server is **retry-safe**:
-  - idempotency keyed by `(customerId, requestId)`
-  - cached replay for identical payloads
-  - **`409 Conflict`** when the same `(customerId, requestId)` is reused with a different payload
+## 📱 iOS App (Frontend)
 
-### How they connect
-The iOS app remains the source of truth for learning state. The backend only generates candidate vocabulary content; once approved, the app persists it into SwiftData and your SRS scheduling continues locally.
+The iOS app is built to make learning feel calm, not chaotic.
 
-## Repository structure
-- `LinguAI/`: SwiftUI views, SwiftData models, Leitner + SRS logic, and the study/box flows
-- `LinguAITests/`: Swift Testing unit + integration coverage (in-memory persistence)
-- `Specifications/`: human-readable Given/When/Then behavioral specs (executable tests live in `LinguAITests/`)
-- `main.py` + `app/`: the primary FastAPI + LangGraph backend (the `/generate-boxes` workflow)
-- `data/`: local SQLite stores used by the backend at runtime
-- `docs/`: longer architecture, prompt, and workflow notes
-- `scripts/`: ingestion utilities for future dataset expansion
-- `linguai-langgraph/`: a minimal backend variant (useful for focused iteration)
+### User experience
+- Users create vocabulary boxes by topic (for example: travel, restaurant, daily conversation)
+- Each word moves through a **6-box Leitner progression** based on correct/incorrect answers
+- Spaced repetition is automatic and mostly invisible to the user
+- Study sessions prioritize due words first, then backfill with near-future words for continuity
 
-## Getting started
-### Backend (FastAPI + LangGraph)
-1. Create a virtual environment:
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   ```
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Configure environment:
-   ```bash
-   cp .env.example .env
-   # set OPENAI_API_KEY
-   ```
-4. Run the server:
-   ```bash
-   uvicorn main:app --reload --host 0.0.0.0 --port 2024
-   ```
+### Key frontend features
+- **Vocabulary boxes:** create, edit, and manage topic collections
+- **Card-based study flow:** reveal answer, self-grade, continue
+- **Progress visualization:** box distribution and completion percentages
+- **Configurable study settings:** session size, study direction, haptics
+- **Translation-assisted entry:** faster creation of bilingual word pairs
 
-Health:
-- `GET /` → `{"status":"ok", ...}`
+### FE ↔ BE interaction
+- The app calls `POST /generate-boxes` for AI-assisted box generation
+- Payload includes prompt, target language, and user context from existing boxes
+- Response returns a structured box candidate (or a recoverable status with user-safe messaging)
 
-Example request:
-```bash
-curl -s -X POST http://localhost:2024/generate-boxes \
-  -H "Content-Type: application/json" \
-  -d '{
-    "requestId": "req-001",
-    "customerId": "cust-1",
-    "prompt": "A1 restaurant words in German",
-    "defaultLanguage": "en",
-    "targetLanguage": "de",
-    "existingBoxes": []
-  }'
-```
+## 🤖 AI Agents System (Backend)
 
-### iOS app
-1. Open `LinguAI.xcodeproj` in Xcode.
-2. Run on a simulator or device.
-3. For an actual device, set `LINGUAI_API_BASE_URL` in the app target’s Info to your Mac’s reachable IP (e.g. `http://192.168.1.5:2024`). Simulator uses `localhost` by default.
+This is the core technical differentiator of LinguAI.
 
-## Development notes (optional)
-- **Learning-domain logic stays deterministic**: Leitner/SRS rules are implemented as domain logic and covered by tests.
-- **Backend outputs stay structured**: the workflow produces schema-valid JSON for word pairs and merges with local retrieval.
-- **Mobile retry safety is part of the contract**: handle `409 Conflict` as “same requestId, different payload” and retry with a new requestId for a new logical action.
-- **Debug safely**: when `DEBUG=true`, the server enables workflow debug endpoints. Payload logging may include user text—treat it as local-only.
+### Problem the agent system solves
 
-## Roadmap
-- Expand the curated vocabulary store and ingestion pipeline (`scripts/`).
-- Improve topic support with deterministic-first logic and AI fallbacks.
-- Refine AI Suggest UX (progress-aware prompts, better status messaging) without adding due-date anxiety.
+Generating vocabulary is easy. Generating *useful* vocabulary is hard.
 
-# LinguAI
-Vocabulary that sticks — built for silent practice, not loud reminders.
+The backend must produce output that is:
+- relevant to the learner prompt
+- appropriate to learner level
+- aligned with target language constraints
+- non-duplicative with known words
+- robust to mobile retries and partial failures
 
-LinguAI is a SwiftUI vocabulary app built on a **6-box Leitner system** with **silent spaced repetition**. You open the app, choose how many cards you want, and study. The app prioritizes reviews in the background—without due counts, timers, or guilt.
+### Why agents instead of a single LLM call
 
-This repo contains:
-- **iOS app** (`LinguAI/`, `LinguAITests/`, `Specifications/`)
-- **Agentic backend** (FastAPI + LangGraph) powering AI-assisted vocabulary box generation: `main.py` + `app/`
+A single prompt can generate words, but it cannot reliably enforce product constraints at scale.  
+LinguAI uses a staged workflow where each node has a narrow responsibility and measurable outcome.
 
-## Why LinguAI is different
-- **Progress is visible, schedules are not.** You see each word’s box (1 → … → 6 / Mastered), but you never manage due dates.
-- **Silent SRS, two-pass sessions.** When you start a study session, the app fills it with words that are due (oldest first), then backfills with “soonest next” items for variety.
-- **AI helps you create boxes—your learning loop stays clean.** “AI Suggest” is designed to generate a new vocabulary box that respects your existing progress (box completion + known words) and avoids duplicate suggestions.
+### Agent roles and responsibilities
 
-## Key features
-- **Vocabulary boxes (topic-first)**: create boxes, add word pairs, edit/delete, and track progress.
-- **Leitner progression (6 boxes + Mastered)**:
-  - Correct answers move a word up one box.
-  - Incorrect answers reset the word to Box 1.
-  - Box 6 (“Mastered”) is treated as learned by default.
-- **Silent spaced repetition (SRS)**:
-  - Correct schedules the next review using box-based day intervals.
-  - Wrong returns the word to Box 1 and makes it eligible again right away.
-- **Session builder that doesn’t block you**:
-  - Pass 1: due words (next review today/past).
-  - Pass 2: future words (soonest first, shuffled for variety).
-- **AI Suggest (optional)**: generate a new vocabulary box from a prompt and your current box progress.
-- **Premium UX details**: haptics (toggleable), careful sheet flows, and translation-assisted word entry.
+The LangGraph workflow in `app/graph.py` orchestrates specialized nodes from `app/box_workflow.py` and related modules:
 
-## How the iOS learning loop works
-### 6-box Leitner
-Correct and incorrect answers move words between boxes:
-- Correct: **1 → 2 → … → 6**
-- Incorrect: **→ 1**
+- **Request understanding agent:** extracts intent and early relevance signals from user prompt
+- **Relevance gate:** blocks off-topic requests with explicit, user-readable status
+- **Topic identification agent:** deterministic-first classification with AI fallback
+- **Level resolution agent:** resolves CEFR level from explicit cues or inference
+- **Retrieval agent:** queries local SQLite vocabulary store first
+- **Quality assessor:** decides if DB results are strong enough or if generation is required
+- **AI word generation agent:** calls OpenAI Responses API with strict JSON schema
+- **Merge/filter agent:** deduplicates and blends DB + AI candidates with deterministic tie-breaking
+- **Finalize agent:** builds final box payload and response metadata
+- **Persistence agent (async):** stores AI fallback pairs post-response via `BackgroundTasks`
 
-Progress is shown as a weighted value (Box 1 = 0%, …, Box 6 = 100%).
+### Orchestration and decision logic
 
-### Silent spaced repetition
-SRS runs “behind the scenes”:
-- Correct schedules the next review from local “start of today” using box-based intervals.
-- Incorrect returns the word to Box 1 and makes it eligible immediately.
+The workflow is intentionally hybrid:
+- **Deterministic when possible:** topic keywords, routing logic, dedupe, response assembly
+- **Probabilistic when useful:** intent parsing, fallback topic inference, constrained word generation
+- **Branch-aware:** skips generation when retrieval quality is already high
 
-### Two-pass session building
-When you start a session, LinguAI:
-1. Picks due words first (oldest `nextReviewDate`).
-2. If needed, fills remaining slots with future words (soonest next review first), then shuffles the backfill.
+This design improves:
+- latency (fewer unnecessary model calls)
+- cost efficiency (DB-first strategy)
+- consistency (schema-constrained output)
+- safety (structured statuses instead of brittle free text)
 
-## How the agentic backend works
-The backend exposes a single product-critical endpoint:
-- `POST /generate-boxes`
+### Reliability design choices (case-study highlights)
 
-### What the backend generates
-Given:
-- a user prompt (topic/intent),
-- a target language,
-- your existing boxes (completion percent + known word pairs),
-
-the workflow produces a **new vocabulary box candidate** (or a structured “can’t do / try again” outcome that the app can display).
-
-### LangGraph workflow (intent → level → retrieval → optional generation)
-The graph lives in `app/graph.py` and is assembled from node functions in `app/box_workflow.py`. Conceptually:
-- **Request understanding + relevance check** (LLM-gated)
-- **Topic identification** (deterministic keywords with an AI fallback when needed)
-- **Learner level resolution** (explicit CEFR in prompt, otherwise inferred from progress)
-- **Retrieval attempt from local vocabulary store** (SQLite)
-- **Retrieval quality assessment**
-- If the DB isn’t strong enough: **OpenAI Responses API** generates candidate word pairs using a strict JSON schema
-- **Merge + dedupe + finalize** the response
-- **Persist AI fallback pairs asynchronously** (non-blocking `BackgroundTasks`)
-
-### Idempotency that supports retries (important for mobile)
-`POST /generate-boxes` implements idempotency keyed by `(customerId, requestId)` with a payload hash:
-- Same keys + same payload replay the cached result
-- Same keys + different payload returns **HTTP 409 Conflict**
-- Only successful generations are stored (safe to retry after transient failures)
-
-The in-repo iOS “AI Suggest” flow reuses `requestId` for exact retries by computing a deterministic payload signature.
-
-### Observability and debug
-When `DEBUG=true`:
-- The server enables debug graph endpoints:
+- **Idempotency for mobile retries:** `(customerId, requestId)` + payload hash
+  - same request replay returns cached success response
+  - same ID with different payload returns `409 Conflict`
+- **Async persistence:** user gets a fast response; AI fallback storage runs in background
+- **Debug observability:** when `DEBUG=true`, the backend exposes graph introspection endpoints:
   - `GET /debug/graph/ascii`
   - `GET /debug/graph/render`
-- It can log the full request payload (use locally; prompts can contain user text).
+- **Privacy-aware logging:** non-debug mode focuses on metadata and workflow outcomes
 
-Outside debug mode:
-- Logs are privacy-conscious and focus on request metadata and workflow outcomes.
+## 🧠 How It Works (System Overview)
 
-## Repository map
-- `LinguAI/`: SwiftUI views, SwiftData models, Leitner + SRS logic, and the UI flows
-- `LinguAITests/`: Swift Testing unit/integration tests (in-memory SwiftData + persistence regressions)
-- `Specifications/`: human-readable Given/When/Then behavioral specs
-- `app/`: backend workflow nodes, prompts, schemas, retrieval, idempotency, and observability
-- `main.py`: FastAPI entrypoint and `/generate-boxes`
-- `data/`: local vocabulary DB + idempotency DB (generated at runtime)
-- `docs/`: longer-form architecture/prompt/agent notes
-- `scripts/`: ingestion utilities (for future dataset expansion)
+This is the end-to-end product loop from interaction to learning outcome:
 
-## Setup and run
-### Backend (FastAPI + LangGraph)
-1. Create a virtual environment:
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   ```
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Configure environment:
-   ```bash
-   cp .env.example .env
-   # set OPENAI_API_KEY
-   ```
-4. Run the server:
-   ```bash
-   uvicorn main:app --reload --host 0.0.0.0 --port 2024
-   ```
+1. User opens the iOS app and requests vocabulary for a specific scenario
+2. Frontend sends prompt + context (known words and box progress) to `POST /generate-boxes`
+3. Backend workflow decides retrieval path, optionally generates AI candidates, and returns structured output
+4. App presents the generated box directly in the study experience
+5. Learner studies using the Leitner loop, creating fresh context for future requests
 
-Health check:
-- `GET /` → `{"status":"ok", ...}`
+## 📸 Visuals
+
+- **Product hero:** overall brand, app direction, and multi-screen UX
+
+> Tip: move screenshots into a repository folder such as `docs/images/` for portable GitHub rendering.
+
+## 🛠 Tech Stack
+
+### Frontend (iOS)
+- SwiftUI
+- SwiftData
+- Apple Translation framework
+- Swift Testing (`LinguAITests`)
+
+### Backend (AI system)
+- Python
+- FastAPI + Uvicorn
+- LangGraph + LangChain
+- OpenAI Responses API + `langchain-openai`
+- SQLite for vocabulary and idempotency persistence
+
+## ⚙️ Getting Started
+
+### 1) Clone and set up backend
+
+```bash
+git clone <your-repo-url>
+cd LinguAI
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+```
+
+Update `.env`:
+- set `OPENAI_API_KEY`
+- optionally tune `OPENAI_MODEL`, `OPENAI_WORD_GEN_MODEL`, `DEBUG`
+
+Run backend:
+
+```bash
+uvicorn main:app --reload --host 0.0.0.0 --port 2024
+```
+
+Quick checks:
+- Health: `GET http://localhost:2024/`
+- Main endpoint: `POST http://localhost:2024/generate-boxes`
 
 Example request:
+
 ```bash
 curl -s -X POST http://localhost:2024/generate-boxes \
   -H "Content-Type: application/json" \
@@ -251,134 +175,50 @@ curl -s -X POST http://localhost:2024/generate-boxes \
   }'
 ```
 
-### iOS app
-1. Open `LinguAI.xcodeproj` in Xcode.
-2. Run on a simulator (defaults to `http://localhost:2024`) or a device.
-3. For a physical device, set `LINGUAI_API_BASE_URL` in the app’s target Info to your Mac’s reachable IP, e.g.:
-   - `http://192.168.1.5:2024`
+### 2) Run the iOS app
 
-## Testing / quality signals
-### iOS
-- Uses **Swift Testing** (`LinguAITests`) with in-memory SwiftData.
-- Includes unit and integration coverage for:
-  - Leitner progression
-  - SRS interval scheduling
-  - two-pass session selection
-  - CRUD + cascade delete
-  - validation
-  - persistence regression checks
-- Behavioral specs are captured as Given/When/Then in `Specifications/` and implemented in `LinguAITests/BehaviorSpecs.swift`.
+1. Open `LinguAI.xcodeproj` in Xcode
+2. Run on simulator or physical device
+3. If using a physical device, configure `LINGUAI_API_BASE_URL` to your machine IP (for example `http://192.168.1.5:2024`)
 
-### Backend
-- `pytest` covers core correctness for idempotency (`tests/test_idempotency.py`).
-- Debug graph endpoints provide a quick sanity check while iterating on the workflow (`/debug/graph/*` when `DEBUG=true`).
+### 3) Run tests
 
-## Roadmap (next durable steps)
-- Expand curated vocabulary coverage and ingestion pipeline (`scripts/`).
-- Add more topic support with deterministic-first logic and AI fallbacks where needed.
-- Improve iOS onboarding and session personalization without reintroducing due-date anxiety.
+- **iOS tests:** run `⌘U` in Xcode (`LinguAITests`)
+- **Backend tests:**
+  ```bash
+  pytest
+  ```
 
-# LinguAI
+## 📂 Project Structure
 
-**Vocabulary that sticks — without the overwhelm.**
+```text
+LinguAI/
+├── LinguAI/                  # SwiftUI app, models, views, app flows
+├── LinguAITests/             # Swift Testing suites
+├── Specifications/           # Given/When/Then behavior specs
+├── app/                      # LangGraph nodes, prompts, schemas, stores
+├── main.py                   # FastAPI app and /generate-boxes endpoint
+├── scripts/                  # Data ingestion and evaluation scripts
+├── tests/                    # Backend tests (pytest)
+├── data/                     # Local runtime DB files
+└── docs/                     # Architecture and implementation notes
+```
 
-LinguAI is an iOS app that helps you learn and retain vocabulary using a proven **6-box Leitner system** and **silent spaced repetition**. You focus on studying; the app quietly prioritises what you need to review next.
+## 🤝 Contributing
 
-This repo contains:
+Contributions are welcome, especially in:
+- language coverage expansion
+- evaluation quality and benchmarking
+- iOS learning UX improvements
+- agent reliability and observability
 
-- **iOS app** — at the repo root: `LinguAI.xcodeproj`, `LinguAI/`, `LinguAITests/`, `Specifications/`
-- **Backend** — in [`linguai-langgraph/`](linguai-langgraph/): FastAPI + LangGraph for chat and vocabulary box generation (see [linguai-langgraph/README.md](linguai-langgraph/README.md) for setup and API)
+To contribute:
+1. Fork the repo
+2. Create a feature branch
+3. Add tests for behavior changes
+4. Open a pull request with a clear problem/solution summary
 
----
+## 📄 License
 
-## Why LinguAI
-
-Most vocabulary tools either bombard you with "due" counts and timers or hide how repetition works. LinguAI takes a different approach:
-
-- **Clear progression** — Words move through six boxes (1 → … → 6). Correct answers move a word up; wrong answers reset it to Box 1. You always see where each word stands.
-- **Silent SRS** — Spaced repetition runs in the background. The app prefers words that are due for review but never locks you into a fixed schedule. Want to study more? You can.
-- **No guilt, no clutter** — No due badges or countdowns. Just open a box, choose your session size, and study. The system does the rest.
-
-Built as a side project by a product manager who wanted a simple, effective vocabulary tool — and who cares as much about the learning science as the experience.
-
----
-
-## What you can do (v0.1)
-
-- **Create vocabulary boxes** — One box per topic or language (e.g. Greetings, Travel). Name them, pick a target language (e.g. German, Italian, Croatian).
-- **Add words** — Enter target-language word + translation. Optional: type in one field and use **Translate to [language]** to fill the other (on-device translation, 5s timeout; clear error messages if unavailable). Words start in Box 1 and are available to study immediately.
-- **Study with cards** — Swipe or tap to reveal the answer; mark correct or incorrect. Words move up a box (or back to 1) based on your answer.
-- **Box progression view** — See six boxes (1–5 numbered, 6 = **Mastered**) with word counts and progress. Choose which boxes to include in each session.
-- **Settings** — Study direction (which language → which), words per session (capped by your selection), haptic feedback. Version label at the bottom for tracking.
-
-*More features (e.g. AI-suggested lists) are planned; the core loop is solid and ready for daily use.*
-
----
-
-## How it works
-
-### 6-box Leitner system
-
-| Your answer | What happens        |
-|------------|---------------------|
-| **Correct** | Word moves up one box (1→2→…→6). |
-| **Incorrect** | Word goes back to Box 1. |
-
-**Box 6 = Mastered** — Words here are treated as learned and are left out of the default "due" rotation. You can still include the Mastered box when you start a session if you want to review them.
-
-Progress is shown as 0–100%: Box 1 = 0%, Box 2 = 20%, … Box 6 = 100%.
-
-### Silent spaced repetition (SRS)
-
-SRS runs behind the scenes. No due dates or timers in the UI.
-
-- **When you get it right** — The app schedules the next review from *start of today* (your local timezone) plus an interval by box: Box 2 → +1 day, 3 → +2 days, 4 → +4 days, 5 → +7 days. Mastered words are not scheduled again.
-- **When you get it wrong** — The word returns to Box 1 and is eligible again right away.
-
-**Session building (two-pass):**
-
-1. **Pass 1** — Fill the session with words that are "due" (next review today or in the past), oldest first.
-2. **Pass 2** — If there aren't enough due words, fill the rest with "future" words (soonest next review first, then shuffled for variety).
-
-So due items are prioritised, but you're never blocked from studying more — you choose session size and which boxes to include.
-
----
-
-## Tech and quality (iOS)
-
-- **Stack:** SwiftUI, SwiftData, Translation framework (iOS).
-- **Testing:** All unit and integration tests use **Swift Testing** (`LinguAITests`). Coverage includes Leitner engine, SRS intervals, two-pass session selection, box/word CRUD and cascade delete, progress values, validation (duplicate box name / word pair), data seeding, and record-answer flow. Helpers: `TestingContainer` (in-memory SwiftData), `TestFixtures`. See `LinguAITests/TEST_PLAN.md` and `LinguAITests/TROUBLESHOOTING.md` for details. **Behavioral specs:** human-readable Given/When/Then scenarios live in `Specifications/`; executable tests implementing them are in `LinguAITests/BehaviorSpecs.swift`.
-- **Version:** v0.1 (Build 1) — internal release.
-
-### High-level architecture
-
-- **Models:** `VocabularyBox`, `BoxWord` (SwiftData); Leitner and SRS logic in `VocabularyModels.swift`. Pure validation in `Validation.swift`.
-- **UI:** `ContentView` → category grid; `VocabularyBoxesView` → box list and detail; study flow and Add/Edit word sheets in the same file. Settings and study direction stored in `UserDefaults` / `@AppStorage`.
-- **Data:** One-time seed via `DataSeeding` (e.g. "Grundlagen" for empty DB); in-memory container only in tests.
-
----
-
-## Getting started
-
-### iOS app
-
-1. Clone the repo and open **`LinguAI.xcodeproj`** in Xcode (at the repo root).
-2. Build and run on a simulator or device (iOS 26+).
-3. Create a box, add words, and start studying.
-
-**Running tests:** In Xcode **Product → Test** (⌘U), or use the Test navigator (⌘6). All tests use in-memory persistence; no production database is touched.
-
-### Backend
-
-The LangGraph backend (FastAPI, chat, `/generate-boxes`) lives in **`linguai-langgraph/`**. For setup, running the server, vocabulary DB, and API details, see **[linguai-langgraph/README.md](linguai-langgraph/README.md)**.
-
----
-
-## Status and roadmap
-
-- **v0.1** — Basic vocabulary box functionality: create boxes, add words, study with Leitner + silent SRS, Mastered box, settings, tests, and docs.
-- **Next** — "AI Suggest" for generated vocabulary lists; further UX polish and optional onboarding.
-
----
-
-*LinguAI — built with product sense and learning science in mind.*
+This repository currently has no published license file.  
+If you plan to reuse or distribute it, open an issue first to align on licensing.
