@@ -6,7 +6,7 @@ LinguAI is a vocabulary learning product with two tightly connected parts:
 - a polished iOS study experience built around a silent 6-box Leitner system
 - an AI backend that generates high-quality vocabulary boxes from natural language prompts
 
-![LinguAI app hero](/Users/domagoj.poljancic/.cursor/projects/Users-domagoj-poljancic-Library-CloudStorage-OneDrive-ZEAL-Documents-Cursor-projects-LinguAI/assets/image-65796862-53f9-4faf-b2b5-f05b4eb3b986.png)
+![LinguAI app hero](docs/images/linguai-hero.png)
 *LinguAI in action: home, box progress, and AI-generated vocabulary workflow.*
 
 ## 🚀 Overview
